@@ -46,7 +46,10 @@ export class Fugue<TClientID extends string = string> {
    * recently active prefixes, which can otherwise cause duplicate
    * positions when a prefix reappears after eviction.
    */
-  private lastValueSeqs = new Map<string, { valueSeq: number; lastUsedAt: number }>();
+  private lastValueSeqs = new Map<
+    string,
+    { valueSeq: number; lastUsedAt: number }
+  >();
   private readonly maxCachedPrefixes = 1000;
   private usageCounter = 0;
 
@@ -120,7 +123,7 @@ export class Fugue<TClientID extends string = string> {
         // prefix (otherwise we would get ans > right by comparing right's
         // older valueIndex to our new valueIndex).
         const prefix = getPrefix(left);
-        const entry = prefix ? this.lastValueSeqs.get(prefix) ?? null : null;
+        const entry = prefix ? (this.lastValueSeqs.get(prefix) ?? null) : null;
         if (
           prefix !== null &&
           entry !== null &&
@@ -131,7 +134,10 @@ export class Fugue<TClientID extends string = string> {
           entry.lastUsedAt = ++this.usageCounter;
           const valueSeq = nextOddValueSeq(entry.valueSeq);
           ans = prefix + stringifyBase52(valueSeq);
-          this.lastValueSeqs.set(prefix, { valueSeq, lastUsedAt: entry.lastUsedAt });
+          this.lastValueSeqs.set(prefix, {
+            valueSeq,
+            lastUsedAt: entry.lastUsedAt,
+          });
         } else {
           // Append waypoint.
           ans = this.appendWaypoint(left);
@@ -224,7 +230,8 @@ export class Fugue<TClientID extends string = string> {
     const prefix = ancestor + waypointName;
     const cacheEntry = this.lastValueSeqs.get(prefix);
     // Use next odd (right-side) valueSeq (1 if it's a new waypoint).
-    const valueSeq = cacheEntry === undefined ? 1 : nextOddValueSeq(cacheEntry.valueSeq);
+    const valueSeq =
+      cacheEntry === undefined ? 1 : nextOddValueSeq(cacheEntry.valueSeq);
     const lastUsedAt = ++this.usageCounter;
     this.lastValueSeqs.set(prefix, { valueSeq, lastUsedAt });
     this.cleanupLastValueSeqs();
