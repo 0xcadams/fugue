@@ -307,7 +307,7 @@ describe("fugue", () => {
       fugue.between(first, newPos);
     }
 
-    expect(fugue.cacheSize).toBe(1000);
+    expect(fugue.cacheSize).toBeLessThanOrEqual(1000);
   });
 
   test("sanitized clientID does not contain '.' or ','", () => {

@@ -5,7 +5,7 @@ describe("fuzzing", () => {
   test("random operations maintain ordering invariants", () => {
     const fugue = new Fugue("client1");
     const positions: string[] = [];
-    const maxOperations = 10_000;
+    const maxOperations = 30_000;
 
     // Helper to verify all positions are in sorted order
     const verifyOrdering = () => {
@@ -145,8 +145,8 @@ describe("fuzzing", () => {
     };
 
     const seeds = [0x1, 0x2a2a2a2a, 0x12345678, 0x7fffffff, 0xdeadbeef];
-    const opsPerSeed = 2_000; // Keep total runtime reasonable
-    const maxPositions = 250;
+    const opsPerSeed = 4_000; // Keep total runtime reasonable
+    const maxPositions = 2_000;
 
     for (const seed of seeds) {
       const rng = makePRNG(seed);

@@ -253,7 +253,7 @@ export class Fugue<TClientID extends string = string> {
       // Keep most recently used prefixes; evict least recently used.
       const entries = Array.from(this.lastValueSeqs.entries())
         .sort(([, a], [, b]) => b.lastUsedAt - a.lastUsedAt)
-        .slice(0, this.maxCachedPrefixes);
+        .slice(0, this.maxCachedPrefixes / 2);
       this.lastValueSeqs = new Map(entries);
     }
   }
