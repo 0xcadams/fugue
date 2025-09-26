@@ -1,18 +1,16 @@
 # fugue
 
-Fractional indexing without conflicts - based on [Fugue](https://arxiv.org/abs/2305.00583). 998 bytes (minified and brotlied) and no dependencies.
+[Fractional indexing](https://www.figma.com/blog/realtime-editing-of-ordered-sequences/) without conflicts - based on [Fugue](https://arxiv.org/abs/2305.00583). 998 bytes (minified and brotlied) and no dependencies.
 
-Fractional indexing is a technique to create an ordering that can be used for [Realtime Editing of Ordered Sequences](https://www.figma.com/blog/realtime-editing-of-ordered-sequences/).
-
-Heavily based on [position-strings](https://github.com/mweidner037/position-strings) with added support for keys that were previously created by other libraries (e.g. [`fractional-indexing`](https://github.com/rocicorp/fractional-indexing)).
+Heavily based on [position-strings](https://github.com/mweidner037/position-strings), with added support for keys that were previously created by other libraries (e.g. [`fractional-indexing`](https://github.com/rocicorp/fractional-indexing)).
 
 ## Motivation
 
-Traditional fractional indexing libraries typically use **deterministic algorithms to generate positions between two points**. This works well in single-user scenarios, but it causes conflicts in distributed systems when multiple users insert items at the same position simultaneously.
+Traditional fractional indexing libraries typically use **deterministic algorithms**. This works well in single-user scenarios, but it causes conflicts in distributed systems when multiple users insert items at the same position simultaneously.
 
-> For example, if two users try to insert between keys `a0` and `a2`, a deterministic algorithm would generate the same new position (e.g., `a1`) for both users, causing a conflict. Also, with non-deterministic algorithms in collaborative text applications, when two users concurrently insert text at the same position, these algorithms interleave the inserted text passages, resulting in unreadable content.
+> For example, if two users try to insert between keys `a0` and `a2`, a deterministic algorithm would generate the same new position (e.g., `a1`) for both users, causing a conflict.
 
-Fugue solves this problem by using unique client IDs, ensuring that simultaneous insertions from different clients create distinct, non-interleaving keys. This enables truly conflict-free collaborative editing without requiring any coordination between clients.
+Fugue uses unique client IDs under the hood, ensuring that simultaneous insertions from different clients create distinct, non-interleaving keys. This enables truly conflict-free collaborative editing without requiring any coordination between clients.
 
 ## Installation
 

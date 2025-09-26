@@ -1,6 +1,6 @@
 {
   "name": "fugue",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Fractional indexing without conflicts.",
   "type": "module",
   "scripts": {
@@ -43,16 +43,16 @@
   },
   "devDependencies": {
     "@size-limit/preset-small-lib": "^11.2.0",
-    "@types/node": "^24.0.6",
+    "@types/node": "^24.5.2",
     "@vitest/coverage-v8": "3.2.4",
     "@vitest/ui": "^3.2.4",
-    "esbuild": "^0.25.5",
+    "esbuild": "^0.25.10",
     "fractional-indexing": "^3.2.0",
-    "jsdom": "^26.1.0",
+    "jsdom": "^27.0.0",
     "prettier": "^3.6.2",
     "size-limit": "^11.2.0",
     "tsup": "^8.5.0",
-    "typescript": "^5.8.3",
+    "typescript": "^5.9.2",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.2.4"
   },

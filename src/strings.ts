@@ -41,9 +41,14 @@ export class Fugue<TClientID extends string = string> {
    * For each waypoint that we created, maps a prefix (see getPrefix)
    * for that waypoint to its last (most recent) valueSeq.
    * We always store the right-side version (odd valueSeq).
+   *
+   * We also track LRU metadata (lastUsedAt) to avoid evicting
+   * recently active prefixes, which can otherwise cause duplicate
+   * positions when a prefix reappears after eviction.
    */
-  private lastValueSeqs = new Map<string, number>();
+  private lastValueSeqs = new Map<string, { valueSeq: number; lastUsedAt: number }>();
   private readonly maxCachedPrefixes = 1000;
+  private usageCounter = 0;
 
   constructor(clientID: TClientID) {
     const clientIDSanitized = sanitizeClientID(clientID);
@@ -57,11 +62,11 @@ export class Fugue<TClientID extends string = string> {
   /**
    * Creates a new position between two existing positions.
    * The new position will be greater than `a` and less than `b`.
-   * 
+   *
    * @param a - An existing position to insert after, or null to insert at the beginning
    * @param b - An existing position to insert before, or null to insert at the end
    * @returns A new position that satisfies `a < new < b`
-   * 
+   *
    * @example
    * ```typescript
    * const fugue = new Fugue("client1");
@@ -70,12 +75,15 @@ export class Fugue<TClientID extends string = string> {
    * const pos3 = fugue.between(pos1, pos2); // Insert between pos1 and pos2
    * // pos1 < pos3 < pos2
    * ```
-   * 
+   *
    * @throws Will warn and adjust inputs if:
    * - `a >= b` (when both are non-null)
    * - `b > Fugue.LAST`
    */
-  between(a: string | null, b: string | null) {
+  between(
+    a: string | null,
+    b: string | null,
+  ): FuguePosition<TClientID> & (string & {}) {
     let left = a;
     let right = b;
 
@@ -112,18 +120,18 @@ export class Fugue<TClientID extends string = string> {
         // prefix (otherwise we would get ans > right by comparing right's
         // older valueIndex to our new valueIndex).
         const prefix = getPrefix(left);
-        const lastValueSeq = prefix
-          ? (this.lastValueSeqs.get(prefix) ?? null)
-          : null;
+        const entry = prefix ? this.lastValueSeqs.get(prefix) ?? null : null;
         if (
           prefix !== null &&
-          lastValueSeq !== null &&
+          entry !== null &&
           !(right !== null && right.startsWith(prefix))
         ) {
           // Reuse.
-          const valueSeq = nextOddValueSeq(lastValueSeq);
+          // Touch entry to mark it as recently used.
+          entry.lastUsedAt = ++this.usageCounter;
+          const valueSeq = nextOddValueSeq(entry.valueSeq);
           ans = prefix + stringifyBase52(valueSeq);
-          this.lastValueSeqs.set(prefix, valueSeq);
+          this.lastValueSeqs.set(prefix, { valueSeq, lastUsedAt: entry.lastUsedAt });
         } else {
           // Append waypoint.
           ans = this.appendWaypoint(left);
@@ -131,16 +139,16 @@ export class Fugue<TClientID extends string = string> {
       }
     }
 
-    return ans as FuguePosition<TClientID> & {};
+    return ans as FuguePosition<TClientID>;
   }
 
   /**
    * Creates a new position immediately after the given position.
    * This is equivalent to calling `between(position, null)`.
-   * 
+   *
    * @param position - The existing position to insert after
    * @returns A new position that is greater than the given position
-   * 
+   *
    * @example
    * ```typescript
    * const fugue = new Fugue("client1");
@@ -156,10 +164,10 @@ export class Fugue<TClientID extends string = string> {
   /**
    * Creates a new position immediately before the given position.
    * This is equivalent to calling `between(null, position)`.
-   * 
+   *
    * @param position - The existing position to insert before
    * @returns A new position that is less than the given position
-   * 
+   *
    * @example
    * ```typescript
    * const fugue = new Fugue("client1");
@@ -175,9 +183,9 @@ export class Fugue<TClientID extends string = string> {
   /**
    * Creates the first position in a sequence.
    * This is equivalent to calling `between(null, null)`.
-   * 
+   *
    * @returns A new position that is greater than all existing positions
-   * 
+   *
    * @example
    * ```typescript
    * const fugue = new Fugue("client1");
@@ -214,12 +222,12 @@ export class Fugue<TClientID extends string = string> {
     }
 
     const prefix = ancestor + waypointName;
-    const lastValueSeq = this.lastValueSeqs.get(prefix);
+    const cacheEntry = this.lastValueSeqs.get(prefix);
     // Use next odd (right-side) valueSeq (1 if it's a new waypoint).
-    const valueSeq =
-      lastValueSeq === undefined ? 1 : nextOddValueSeq(lastValueSeq);
-    this.lastValueSeqs.set(prefix, valueSeq);
-    this.cleanupLastValueSeqs(); // Add cleanup check after setting new values
+    const valueSeq = cacheEntry === undefined ? 1 : nextOddValueSeq(cacheEntry.valueSeq);
+    const lastUsedAt = ++this.usageCounter;
+    this.lastValueSeqs.set(prefix, { valueSeq, lastUsedAt });
+    this.cleanupLastValueSeqs();
     return prefix + stringifyBase52(valueSeq);
   }
 
@@ -235,11 +243,10 @@ export class Fugue<TClientID extends string = string> {
    */
   private cleanupLastValueSeqs() {
     if (this.lastValueSeqs.size > this.maxCachedPrefixes) {
-      // Convert to array, sort by values (most recent first), and take only the most recent entries
+      // Keep most recently used prefixes; evict least recently used.
       const entries = Array.from(this.lastValueSeqs.entries())
-        .sort(([, a], [, b]) => b - a)
+        .sort(([, a], [, b]) => b.lastUsedAt - a.lastUsedAt)
         .slice(0, this.maxCachedPrefixes);
-
       this.lastValueSeqs = new Map(entries);
     }
   }
