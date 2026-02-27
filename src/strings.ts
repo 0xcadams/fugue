@@ -1,413 +1,914 @@
 const FIRST = "";
 const LAST = "~";
 
-export type FuguePosition<TClientID extends string = string> =
-  | `${string}${TClientID}.${string}`
-  | typeof FIRST
-  | typeof LAST;
+export const DIGITS =
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+export const SEPARATOR = "!";
 
-export type FugueOptions<TClientID extends string = string> = {
-  /**
-   * The unique ID for this client.
-   */
-  clientID: TClientID;
-};
+export const ANCHOR_BITS = 64;
+export const RUN_BITS = 96;
+export const SLOT_BITS = 64;
 
-export class Fugue<TClientID extends string = string> {
-  /**
-   * A string that is less than all positions.
-   */
-  static readonly FIRST = FIRST;
-  /**
-   * A string that is greater than all positions.
-   */
-  static readonly LAST = LAST;
+export const ANCHOR_WIDTH = 11;
+export const RUN_WIDTH = 17;
+export const SLOT_WIDTH = 11;
 
-  /**
-   * The unique ID for this client.
-   */
-  readonly clientID: TClientID;
-  /**
-   * The waypoints' long name: `,${clientID}.`.
-   */
-  private readonly longName: `,${TClientID}.`;
-  /**
-   * Variant of longName used for a position's first ID: `${clientID}.`.
-   * (Otherwise every position would start with a redundant ','.)
-   */
-  private readonly firstName: `${TClientID}.`;
+export const SLOT_MIN = 0n;
+export const SLOT_MAX = (1n << BigInt(SLOT_BITS)) - 1n;
+export const SLOT_MID = 1n << BigInt(SLOT_BITS - 1);
+export const SLOT_STEP_DEFAULT = 1n << 48n;
 
-  /**
-   * For each waypoint that we created, maps a prefix (see getPrefix)
-   * for that waypoint to its last (most recent) valueSeq.
-   * We always store the right-side version (odd valueSeq).
-   *
-   * We also track LRU metadata (lastUsedAt) to avoid evicting
-   * recently active prefixes, which can otherwise cause duplicate
-   * positions when a prefix reappears after eviction.
-   */
-  private lastValueSeqs = new Map<
-    string,
-    { valueSeq: number; lastUsedAt: number }
-  >();
-  private readonly maxCachedPrefixes = 1000;
-  private usageCounter = 0;
+const ANCHOR_MIN = 0n;
+const ANCHOR_MAX = (1n << BigInt(ANCHOR_BITS)) - 1n;
+const RUN_MIN = 0n;
+const RUN_MAX = (1n << BigInt(RUN_BITS)) - 1n;
+const BASE62 = BigInt(DIGITS.length);
+const SLOT_UPPER_EXCLUSIVE = SLOT_MAX + 1n;
 
-  constructor(clientID: TClientID) {
-    const clientIDSanitized = sanitizeClientID(clientID);
-
-    this.longName = `,${clientIDSanitized}.` as const;
-    this.firstName = `${clientIDSanitized}.` as const;
-
-    this.clientID = clientIDSanitized;
-  }
-
-  /**
-   * Creates a new position between two existing positions.
-   * The new position will be greater than `a` and less than `b`.
-   *
-   * @param a - An existing position to insert after, or null to insert at the beginning
-   * @param b - An existing position to insert before, or null to insert at the end
-   * @returns A new position that satisfies `a < new < b`
-   *
-   * @example
-   * ```typescript
-   * const fugue = new Fugue("client1");
-   * const pos1 = fugue.between(null, null); // First position
-   * const pos2 = fugue.between(pos1, null); // Insert after pos1
-   * const pos3 = fugue.between(pos1, pos2); // Insert between pos1 and pos2
-   * // pos1 < pos3 < pos2
-   * ```
-   *
-   * @throws Will warn and adjust inputs if:
-   * - `a >= b` (when both are non-null)
-   * - `b > Fugue.LAST`
-   */
-  between(
-    a: string | null,
-    b: string | null,
-  ): FuguePosition<TClientID> & (string & {}) {
-    let left = a;
-    let right = b;
-
-    if (left !== null && right !== null && left >= right) {
-      console.warn(
-        `left must be less than right: ${left} < ${right} - using ${Fugue.FIRST} instead`,
-      );
-
-      left = Fugue.FIRST;
-    }
-
-    if (right !== null && right > Fugue.LAST) {
-      console.warn(
-        `right must be less than or equal to LAST: ${right} > ${Fugue.LAST} - using ${Fugue.LAST} instead`,
-      );
-
-      right = Fugue.LAST;
-    }
-
-    let ans: string;
-
-    if (right !== null && (left === null || right.startsWith(left))) {
-      // Left child of right. This always appends a waypoint.
-      const ancestor = leftVersion(right);
-      ans = this.appendWaypoint(ancestor);
-    } else {
-      // Right child of left.
-      if (left === null) {
-        // ancestor is FIRST.
-        ans = this.appendWaypoint("");
-      } else {
-        // Check if we can reuse left's prefix.
-        // It needs to be one of ours, and right can't use the same
-        // prefix (otherwise we would get ans > right by comparing right's
-        // older valueIndex to our new valueIndex).
-        const prefix = getPrefix(left);
-        const entry = prefix ? (this.lastValueSeqs.get(prefix) ?? null) : null;
-        if (
-          prefix !== null &&
-          entry !== null &&
-          !(right !== null && right.startsWith(prefix))
-        ) {
-          // Reuse.
-          // Touch entry to mark it as recently used.
-          entry.lastUsedAt = ++this.usageCounter;
-          const valueSeq = nextOddValueSeq(entry.valueSeq);
-          ans = prefix + stringifyBase52(valueSeq);
-          this.lastValueSeqs.set(prefix, {
-            valueSeq,
-            lastUsedAt: entry.lastUsedAt,
-          });
-        } else {
-          // Append waypoint.
-          ans = this.appendWaypoint(left);
-        }
-      }
-    }
-
-    return ans as FuguePosition<TClientID>;
-  }
-
-  /**
-   * Creates a new position immediately after the given position.
-   * This is equivalent to calling `between(position, null)`.
-   *
-   * @param position - The existing position to insert after
-   * @returns A new position that is greater than the given position
-   *
-   * @example
-   * ```typescript
-   * const fugue = new Fugue("client1");
-   * const pos1 = fugue.between(null, null); // First position
-   * const pos2 = fugue.after(pos1); // Insert after pos1
-   * // pos1 < pos2
-   * ```
-   */
-  after(position: string) {
-    return this.between(position, null);
-  }
-
-  /**
-   * Creates a new position immediately before the given position.
-   * This is equivalent to calling `between(null, position)`.
-   *
-   * @param position - The existing position to insert before
-   * @returns A new position that is less than the given position
-   *
-   * @example
-   * ```typescript
-   * const fugue = new Fugue("client1");
-   * const pos1 = fugue.between(null, null); // First position
-   * const pos2 = fugue.before(pos1); // Insert before pos1
-   * // pos2 < pos1
-   * ```
-   */
-  before(position: string) {
-    return this.between(null, position);
-  }
-
-  /**
-   * Creates the first position in a sequence.
-   * This is equivalent to calling `between(null, null)`.
-   *
-   * @returns A new position that is greater than all existing positions
-   *
-   * @example
-   * ```typescript
-   * const fugue = new Fugue("client1");
-   * const pos1 = fugue.first(); // First position
-   * const pos2 = fugue.after(pos1); // Insert after pos1
-   * // pos1 < pos2
-   * ```
-   */
-  first() {
-    return this.between(null, null);
-  }
-
-  /**
-   * Appends a waypoint to the ancestor.
-   */
-  private appendWaypoint(ancestor: string) {
-    let waypointName: string = ancestor === "" ? this.firstName : this.longName;
-    // If our ID already appears in ancestor, instead use a short
-    // name for the waypoint.
-    // Here we use the uniqueness of ',' and '.' to
-    // claim that if this.longName (= `,${ID}.`) appears in ancestor, then it
-    // must actually be from a waypoint that we created.
-    let existing = ancestor.lastIndexOf(this.longName);
-    if (ancestor.startsWith(this.firstName)) existing = 0;
-    if (existing !== -1) {
-      // Find the index of existing among the long-name
-      // waypoints, in backwards order. Here we use the fact that
-      // each longName ends with '.' and that '.' does not appear otherwise.
-      let index = -1;
-      for (let i = existing; i < ancestor.length; i++) {
-        if (ancestor[i] === ".") index++;
-      }
-      waypointName = stringifyShortName(index);
-    }
-
-    const prefix = ancestor + waypointName;
-    const cacheEntry = this.lastValueSeqs.get(prefix);
-    // Use next odd (right-side) valueSeq (1 if it's a new waypoint).
-    const valueSeq =
-      cacheEntry === undefined ? 1 : nextOddValueSeq(cacheEntry.valueSeq);
-    const lastUsedAt = ++this.usageCounter;
-    this.lastValueSeqs.set(prefix, { valueSeq, lastUsedAt });
-    this.cleanupLastValueSeqs();
-    return prefix + stringifyBase52(valueSeq);
-  }
-
-  /**
-   * The number of prefixes in the cache.
-   */
-  get cacheSize() {
-    return this.lastValueSeqs.size;
-  }
-
-  /**
-   * Cleans up the cache of last value sequences.
-   */
-  private cleanupLastValueSeqs() {
-    if (this.lastValueSeqs.size > this.maxCachedPrefixes) {
-      // Keep most recently used prefixes; evict least recently used.
-      const entries = Array.from(this.lastValueSeqs.entries())
-        .sort(([, a], [, b]) => b.lastUsedAt - a.lastUsedAt)
-        .slice(0, this.maxCachedPrefixes / 2);
-      this.lastValueSeqs = new Map(entries);
-    }
+const DIGIT_TO_VALUE = new Map<string, number>();
+for (let i = 0; i < DIGITS.length; i++) {
+  const digit = DIGITS[i];
+  if (digit !== undefined) {
+    DIGIT_TO_VALUE.set(digit, i);
   }
 }
 
-/**
- * Returns position's *prefix*: the string through the last waypoint
- * name, or equivalently, without the final valueSeq.
- */
-export function getPrefix(position: string) {
-  // Last waypoint char is the last '.' (for long names) or
-  // digit (for short names). Note that neither appear in valueSeq,
-  // which is all letters.
-  for (let i = position.length - 2; i >= 0; i--) {
-    const char = position[i];
-    if (char !== undefined && (char === "." || ("0" <= char && char <= "9"))) {
-      // i is the last waypoint char, i.e., the end of the prefix.
-      return position.slice(0, i + 1);
+const defaultWarning = (message: string) => {
+  console.warn(message);
+};
+
+declare const POSITION_BRAND: unique symbol;
+declare const RUN_PREFIX_BRAND: unique symbol;
+
+export type FuguePosition = string & {
+  readonly [POSITION_BRAND]: "FuguePosition";
+};
+
+export type FugueRunPrefix = string & {
+  readonly [RUN_PREFIX_BRAND]: "FugueRunPrefix";
+};
+
+export type ParsedFuguePosition = Readonly<{
+  anchor: bigint;
+  runId: bigint;
+  slot: bigint;
+  subslots?: readonly bigint[];
+}>;
+
+export type ParsedFugueRunPrefix = Readonly<{
+  anchor: bigint;
+  runId: bigint;
+}>;
+
+export type FugueRandomBytes = (byteLength: number) => Uint8Array;
+
+export type FugueOptions = {
+  randomBytes?: FugueRandomBytes;
+  allowInsecureRandom?: boolean;
+  onWarning?: (message: string) => void;
+  slotStep?: bigint;
+};
+
+export class InvalidPositionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidPositionError";
+  }
+}
+
+export class SlotExhaustedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlotExhaustedError";
+  }
+}
+
+export class RunPrefixExhaustedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunPrefixExhaustedError";
+  }
+}
+
+export class SecureRandomUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SecureRandomUnavailableError";
+  }
+}
+
+function maxBigInt(a: bigint, b: bigint) {
+  return a > b ? a : b;
+}
+
+function minBigInt(a: bigint, b: bigint) {
+  return a < b ? a : b;
+}
+
+function assertRange(
+  value: bigint,
+  min: bigint,
+  max: bigint,
+  fieldName: string,
+) {
+  if (value < min || value > max) {
+    throw new RangeError(
+      `${fieldName} must be in [${min}, ${max}], got ${value}`,
+    );
+  }
+}
+
+function assertPositiveStep(step: bigint) {
+  if (step <= 0n) {
+    throw new RangeError(`slotStep must be > 0, got ${step}`);
+  }
+
+  if (step > SLOT_MAX) {
+    throw new RangeError(`slotStep must be <= ${SLOT_MAX}, got ${step}`);
+  }
+}
+
+function compareRunPrefixes(a: ParsedFugueRunPrefix, b: ParsedFugueRunPrefix) {
+  if (a.anchor < b.anchor) {
+    return -1;
+  }
+
+  if (a.anchor > b.anchor) {
+    return 1;
+  }
+
+  if (a.runId < b.runId) {
+    return -1;
+  }
+
+  if (a.runId > b.runId) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function comparePositions(a: ParsedFuguePosition, b: ParsedFuguePosition) {
+  const prefix = compareRunPrefixes(a, b);
+  if (prefix !== 0) {
+    return prefix;
+  }
+
+  return compareSlotPaths(getSlotPath(a), getSlotPath(b));
+}
+
+function isSameRun(a: ParsedFuguePosition, b: ParsedFuguePosition) {
+  return a.anchor === b.anchor && a.runId === b.runId;
+}
+
+function getSlotPath(position: ParsedFuguePosition) {
+  const path = [position.slot];
+
+  if (position.subslots !== undefined) {
+    path.push(...position.subslots);
+  }
+
+  return path;
+}
+
+function compareSlotPaths(left: readonly bigint[], right: readonly bigint[]) {
+  const sharedLength = Math.min(left.length, right.length);
+
+  for (let index = 0; index < sharedLength; index++) {
+    const leftValue = left[index]!;
+    const rightValue = right[index]!;
+
+    if (leftValue < rightValue) {
+      return -1;
     }
+
+    if (leftValue > rightValue) {
+      return 1;
+    }
+  }
+
+  if (left.length < right.length) {
+    return -1;
+  }
+
+  if (left.length > right.length) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function slotPathBetween(
+  left: readonly bigint[],
+  right: readonly bigint[],
+): bigint[] | null {
+  const prefix: bigint[] = [];
+  let index = 0;
+
+  for (;;) {
+    const leftHasValue = index < left.length;
+    const rightHasValue = index < right.length;
+
+    if (!leftHasValue && !rightHasValue) {
+      prefix.push(SLOT_MID);
+      return prefix;
+    }
+
+    if (!leftHasValue) {
+      const rightValue = right[index]!;
+
+      if (rightValue > 0n) {
+        prefix.push(rightValue / 2n);
+        return prefix;
+      }
+
+      if (right[index + 1] !== undefined) {
+        prefix.push(0n);
+        return prefix;
+      }
+
+      return null;
+    }
+
+    if (!rightHasValue) {
+      const leftValue = left[index]!;
+
+      if (leftValue < SLOT_MAX) {
+        prefix.push((leftValue + SLOT_UPPER_EXCLUSIVE) / 2n);
+        return prefix;
+      }
+
+      prefix.push(SLOT_MAX);
+      index++;
+      continue;
+    }
+
+    const leftValue = left[index]!;
+    const rightValue = right[index]!;
+
+    if (leftValue === rightValue) {
+      prefix.push(leftValue);
+      index++;
+      continue;
+    }
+
+    const gap = rightValue - leftValue;
+    if (gap >= 2n) {
+      prefix.push((leftValue + rightValue) / 2n);
+      return prefix;
+    }
+
+    prefix.push(leftValue);
+    index++;
+  }
+}
+
+function slotPathAfter(left: readonly bigint[]) {
+  const prefix: bigint[] = [];
+  for (const value of left) {
+    if (value < SLOT_MAX) {
+      prefix.push((value + SLOT_UPPER_EXCLUSIVE) / 2n);
+      return prefix;
+    }
+
+    prefix.push(SLOT_MAX);
+  }
+
+  prefix.push(SLOT_MID);
+  return prefix;
+}
+
+function slotPathBefore(right: readonly bigint[]): bigint[] | null {
+  if (right.length > 1) {
+    return [0n];
   }
 
   return null;
 }
 
-/**
- * Returns the variant of position ending with a "left" marker
- * instead of the default "right" marker.
- *
- * I.e., the ancestor for position's left descendants.
- */
-export function leftVersion(position: string) {
-  const lastWaypointChar = position[position.length - 1];
-  if (lastWaypointChar === undefined) {
-    return "";
-  }
-  // We need to subtract one from the (odd) valueSeq, equivalently, from
-  // its last base52 digit.
-  const last = parseBase52(lastWaypointChar);
+function formatPositionFromSlotPath(
+  anchor: bigint,
+  runId: bigint,
+  slotPath: readonly bigint[],
+) {
+  const slot = slotPath[0]!;
+  const subslots = slotPath.slice(1);
 
-  return position.slice(0, -1) + stringifyBase52(last - 1);
+  if (subslots.length === 0) {
+    return formatPosition({ anchor, runId, slot });
+  }
+
+  return formatPosition({
+    anchor,
+    runId,
+    slot,
+    subslots,
+  });
 }
 
-/**
- * Base 52, except for last digit, which is base 10 using
- * digits. If less than 0, "A".
- */
-export function stringifyShortName(n: number) {
-  if (n < 0) {
-    return "A";
-  } else if (n < 10) {
-    return String.fromCharCode(48 + n);
-  } else {
-    return (
-      stringifyBase52(Math.floor(n / 10)) + String.fromCharCode(48 + (n % 10))
+function bitLength(value: bigint) {
+  return value.toString(2).length;
+}
+
+function bytesToBigInt(bytes: Uint8Array) {
+  let value = 0n;
+
+  for (const byte of bytes) {
+    value = (value << 8n) + BigInt(byte);
+  }
+
+  return value;
+}
+
+function parseBase62FixedWidth(
+  value: string,
+  width: number,
+  maxAllowed: bigint,
+): bigint | null {
+  if (value.length !== width) {
+    return null;
+  }
+
+  let out = 0n;
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i]!;
+
+    const digit = DIGIT_TO_VALUE.get(char);
+    if (digit === undefined) {
+      return null;
+    }
+
+    out = out * BASE62 + BigInt(digit);
+  }
+
+  if (out > maxAllowed) {
+    return null;
+  }
+
+  return out;
+}
+
+function parsePositionInternal(value: string): ParsedFuguePosition | null {
+  const [anchorEncoded, runIdEncoded, slotEncoded, ...subslotEncoded] =
+    value.split(SEPARATOR);
+
+  if (
+    anchorEncoded === undefined ||
+    runIdEncoded === undefined ||
+    slotEncoded === undefined
+  ) {
+    return null;
+  }
+
+  const anchor = parseBase62FixedWidth(anchorEncoded, ANCHOR_WIDTH, ANCHOR_MAX);
+  if (anchor === null) {
+    return null;
+  }
+
+  const runId = parseBase62FixedWidth(runIdEncoded, RUN_WIDTH, RUN_MAX);
+  if (runId === null) {
+    return null;
+  }
+
+  const slot = parseBase62FixedWidth(slotEncoded, SLOT_WIDTH, SLOT_MAX);
+  if (slot === null) {
+    return null;
+  }
+
+  const subslots: bigint[] = [];
+  for (const encodedSubslot of subslotEncoded) {
+    const subslot = parseBase62FixedWidth(encodedSubslot, SLOT_WIDTH, SLOT_MAX);
+    if (subslot === null) {
+      return null;
+    }
+
+    subslots.push(subslot);
+  }
+
+  if (subslots.length === 0) {
+    return { anchor, runId, slot };
+  }
+
+  return { anchor, runId, slot, subslots };
+}
+
+export function encode62(value: bigint, width: number) {
+  if (width <= 0) {
+    throw new RangeError(`width must be > 0, got ${width}`);
+  }
+
+  if (value < 0n) {
+    throw new RangeError(`value must be >= 0, got ${value}`);
+  }
+
+  let out = "";
+  let rest = value;
+
+  while (rest > 0n) {
+    const digit = Number(rest % BASE62);
+    out = DIGITS[digit]! + out;
+    rest /= BASE62;
+  }
+
+  if (out.length === 0) {
+    out = "0";
+  }
+
+  if (out.length > width) {
+    throw new RangeError(
+      `value ${value} cannot be encoded in width ${width} (needs ${out.length})`,
     );
   }
+
+  return out.padStart(width, "0");
 }
 
-/**
- * Base 52 encoding using letters (with "digits" in order by code point).
- */
-export function stringifyBase52(n: number) {
-  if (n === 0) {
-    return "A";
+export function decode62(value: string) {
+  let out = 0n;
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i]!;
+
+    const digit = DIGIT_TO_VALUE.get(char);
+    if (digit === undefined) {
+      throw new InvalidPositionError(`Invalid base62 character \"${char}\"`);
+    }
+
+    out = out * BASE62 + BigInt(digit);
   }
-  const codes: number[] = [];
-  while (n > 0) {
-    const digit = n % 52;
-    codes.unshift((digit >= 26 ? 71 : 65) + digit);
-    n = Math.floor(n / 52);
-  }
-  return String.fromCharCode(...codes);
+
+  return out;
 }
 
-/**
- * Parses a base52 string into a number.
- */
-export function parseBase52(s: string) {
-  let n = 0;
-  for (let i = 0; i < s.length; i++) {
-    const code = s.charCodeAt(i);
-    const digit = code - (code >= 97 ? 71 : 65);
-    n = 52 * n + digit;
-  }
-  return n;
+export function isFuguePosition(value: string): value is FuguePosition {
+  return parsePositionInternal(value) !== null;
 }
 
-const log52 = Math.log(52);
+export function parsePosition(value: string): ParsedFuguePosition {
+  const parsed = parsePositionInternal(value);
+  if (parsed === null) {
+    throw new InvalidPositionError(
+      `Invalid position \"${value}\". Expected format ${ANCHOR_WIDTH}b62!${RUN_WIDTH}b62!${SLOT_WIDTH}b62[!${SLOT_WIDTH}b62...]`,
+    );
+  }
 
-/**
- * Returns the next odd valueSeq in the special sequence.
- * This is equivalent to mapping n to its valueIndex, adding 2,
- * then mapping back.
- *
- * The sequence has the following properties:
- * 1. Each number is a nonnegative integer (however, not all
- * nonnegative integers are enumerated).
- * 2. The numbers' base-52 representations are enumerated in
- * lexicographic order, with no prefixes (i.e., no string
- * representation is a prefix of another).
- * 3. The n-th enumerated number has O(log(n)) base-52 digits.
- *
- * Properties (2) and (3) are analogous to normal counting, except
- * that we order by the (base-52) lexicographic order instead of the
- * usual order by magnitude. It is also the case that
- * the numbers are in order by magnitude, although we do not
- * use this property.
- *
- * The specific sequence is as follows:
- * - Start with 0.
- * - Enumerate 26^1 numbers (A, B, ..., Z).
- * - Add 1, multiply by 52, then enumerate 26^2 numbers
- * (aA, aB, ..., mz).
- * - Add 1, multiply by 52, then enumerate 26^3 numbers
- * (nAA, nAB, ..., tZz).
- * - Repeat this pattern indefinitely, enumerating
- * 26^d d-digit numbers for each d >= 1. Imagining a decimal place
- * in front of each number, each d consumes 2^(-d) of the unit interval,
- * so we never "reach 1" (overflow to d+1 digits when
- * we meant to use d digits).
- */
-export function nextOddValueSeq(n: number) {
-  const d = n === 0 ? 1 : Math.floor(Math.log(n) / log52) + 1;
-  // You can calculate that the last d-digit number is 52^d - 26^d - 1.
-  if (n === Math.pow(52, d) - Math.pow(26, d) - 1) {
-    // First step is a new length: n -> (n + 1) * 52.
-    // Second step is n -> n + 1.
-    return (n + 1) * 52 + 1;
-  } else {
-    // n -> n + 1 twice.
-    return n + 2;
+  return parsed;
+}
+
+export function formatPosition(position: ParsedFuguePosition): FuguePosition {
+  const { anchor, runId, slot } = position;
+  const subslots = position.subslots ?? [];
+
+  assertRange(anchor, ANCHOR_MIN, ANCHOR_MAX, "anchor");
+  assertRange(runId, RUN_MIN, RUN_MAX, "runId");
+  assertRange(slot, SLOT_MIN, SLOT_MAX, "slot");
+
+  const encodedSlotPath = [encode62(slot, SLOT_WIDTH)];
+  for (const subslot of subslots) {
+    assertRange(subslot, SLOT_MIN, SLOT_MAX, "subslot");
+    encodedSlotPath.push(encode62(subslot, SLOT_WIDTH));
+  }
+
+  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}${encodedSlotPath.join(SEPARATOR)}` as FuguePosition;
+}
+
+export function parseRunPrefix(prefix: string): ParsedFugueRunPrefix {
+  if (!prefix.endsWith(SEPARATOR)) {
+    throw new InvalidPositionError(
+      `Invalid run prefix \"${prefix}\": missing trailing separator`,
+    );
+  }
+
+  const trimmed = prefix.slice(0, -1);
+  const split = trimmed.split(SEPARATOR);
+  if (split.length !== 2) {
+    throw new InvalidPositionError(`Invalid run prefix \"${prefix}\"`);
+  }
+
+  const anchorEncoded = split[0]!;
+  const runIdEncoded = split[1]!;
+
+  const anchor = parseBase62FixedWidth(anchorEncoded, ANCHOR_WIDTH, ANCHOR_MAX);
+  const runId = parseBase62FixedWidth(runIdEncoded, RUN_WIDTH, RUN_MAX);
+
+  if (anchor === null || runId === null) {
+    throw new InvalidPositionError(`Invalid run prefix \"${prefix}\"`);
+  }
+
+  return { anchor, runId };
+}
+
+export function formatRunPrefix(anchor: bigint, runId: bigint): FugueRunPrefix {
+  assertRange(anchor, ANCHOR_MIN, ANCHOR_MAX, "anchor");
+  assertRange(runId, RUN_MIN, RUN_MAX, "runId");
+
+  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}` as FugueRunPrefix;
+}
+
+export function getRunPrefix(position: string): FugueRunPrefix {
+  const parsed = parsePosition(position);
+  return formatRunPrefix(parsed.anchor, parsed.runId);
+}
+
+export class FugueRun {
+  readonly anchor: bigint;
+  readonly runId: bigint;
+  readonly prefix: FugueRunPrefix;
+  readonly first: FuguePosition;
+
+  private minSlot: bigint;
+  private maxSlot: bigint;
+  private readonly slotStep: bigint;
+
+  constructor(
+    anchor: bigint,
+    runId: bigint,
+    slotStep: bigint,
+    initialSlot: bigint = SLOT_MID,
+  ) {
+    assertRange(anchor, ANCHOR_MIN, ANCHOR_MAX, "anchor");
+    assertRange(runId, RUN_MIN, RUN_MAX, "runId");
+    assertRange(initialSlot, SLOT_MIN, SLOT_MAX, "initialSlot");
+    assertPositiveStep(slotStep);
+
+    this.anchor = anchor;
+    this.runId = runId;
+    this.slotStep = slotStep;
+
+    this.prefix = formatRunPrefix(anchor, runId);
+    this.first = formatPosition({ anchor, runId, slot: initialSlot });
+    this.minSlot = initialSlot;
+    this.maxSlot = initialSlot;
+  }
+
+  append(): FuguePosition {
+    if (this.maxSlot > SLOT_MAX - this.slotStep) {
+      throw new SlotExhaustedError(
+        `Cannot append within run ${this.prefix}: slot exceeds ${SLOT_MAX}`,
+      );
+    }
+
+    this.maxSlot += this.slotStep;
+    return formatPosition({
+      anchor: this.anchor,
+      runId: this.runId,
+      slot: this.maxSlot,
+    });
+  }
+
+  prepend(): FuguePosition {
+    if (this.minSlot < SLOT_MIN + this.slotStep) {
+      throw new SlotExhaustedError(
+        `Cannot prepend within run ${this.prefix}: slot goes below ${SLOT_MIN}`,
+      );
+    }
+
+    this.minSlot -= this.slotStep;
+    return formatPosition({
+      anchor: this.anchor,
+      runId: this.runId,
+      slot: this.minSlot,
+    });
   }
 }
 
-/**
- * Sanitizes a client ID by removing invalid characters.
- */
-export function sanitizeClientID<TClientID extends string>(
-  clientID: TClientID,
-): TClientID {
-  let sanitized = clientID.replace(/[.,]/g, "");
+export class Fugue {
+  static readonly FIRST = FIRST;
+  static readonly LAST = LAST;
 
-  if (sanitized.length !== clientID.length) {
-    console.warn("clientID contains invalid characters");
+  private readonly randomBytes: FugueRandomBytes;
+  private readonly allowInsecureRandom: boolean;
+  private readonly onWarning: (message: string) => void;
+  private readonly slotStep: bigint;
+  private warnedInsecureRandom = false;
+
+  constructor(options?: FugueOptions);
+  constructor(_legacyClientID: string, options?: FugueOptions);
+  constructor(
+    optionsOrLegacyClientID?: FugueOptions | string,
+    maybeOptions?: FugueOptions,
+  ) {
+    const options =
+      typeof optionsOrLegacyClientID === "string"
+        ? (maybeOptions ?? {})
+        : (optionsOrLegacyClientID ?? {});
+
+    this.onWarning = options.onWarning ?? defaultWarning;
+
+    if (typeof optionsOrLegacyClientID === "string") {
+      this.onWarning(
+        "Passing clientID to new Fugue(clientID) is deprecated in v3 and ignored. Use new Fugue(options).",
+      );
+    }
+
+    this.allowInsecureRandom = options.allowInsecureRandom ?? false;
+    this.slotStep = options.slotStep ?? SLOT_STEP_DEFAULT;
+    assertPositiveStep(this.slotStep);
+
+    this.randomBytes =
+      options.randomBytes ??
+      ((byteLength: number) => {
+        return this.defaultRandomBytes(byteLength);
+      });
   }
 
-  while (sanitized >= Fugue.LAST) {
-    console.warn(`clientID must be less than ${Fugue.LAST}: ${sanitized}`);
-    sanitized = sanitized.slice(0, -1);
+  first(): FuguePosition {
+    return this.between(null, null);
   }
 
-  if (sanitized.length === 0) {
-    throw new Error("clientID cannot be empty");
+  after(position: string): FuguePosition {
+    return this.between(position, null);
   }
 
-  return sanitized as TClientID;
+  before(position: string): FuguePosition {
+    return this.between(null, position);
+  }
+
+  between(left: string | null, right: string | null): FuguePosition {
+    const [parsedLeft, parsedRight] = this.parseBounds(left, right);
+
+    if (
+      parsedLeft !== null &&
+      parsedRight !== null &&
+      isSameRun(parsedLeft, parsedRight)
+    ) {
+      const slotPath = slotPathBetween(
+        getSlotPath(parsedLeft),
+        getSlotPath(parsedRight),
+      );
+
+      if (slotPath === null) {
+        throw new SlotExhaustedError(
+          `No slot space between ${left} and ${right} inside run ${formatRunPrefix(parsedLeft.anchor, parsedLeft.runId)}`,
+        );
+      }
+
+      return formatPositionFromSlotPath(
+        parsedLeft.anchor,
+        parsedLeft.runId,
+        slotPath,
+      );
+    }
+
+    try {
+      return this.startRunFromBounds(parsedLeft, parsedRight).first;
+    } catch (error) {
+      if (!(error instanceof RunPrefixExhaustedError)) {
+        throw error;
+      }
+
+      if (parsedLeft !== null && parsedRight === null) {
+        return this.appendInsideRun(parsedLeft);
+      }
+
+      if (parsedLeft === null && parsedRight !== null) {
+        return this.prependInsideRun(parsedRight);
+      }
+
+      throw error;
+    }
+  }
+
+  startRun(left: string | null, right: string | null): FugueRun {
+    const [parsedLeft, parsedRight] = this.parseBounds(left, right);
+
+    if (
+      parsedLeft !== null &&
+      parsedRight !== null &&
+      isSameRun(parsedLeft, parsedRight)
+    ) {
+      throw new RunPrefixExhaustedError(
+        "Cannot start a new independent run between two keys in the same run. Use between(left, right) for single inserts.",
+      );
+    }
+
+    return this.startRunFromBounds(parsedLeft, parsedRight);
+  }
+
+  startRunAfter(position: string): FugueRun {
+    return this.startRun(position, null);
+  }
+
+  startRunBefore(position: string): FugueRun {
+    return this.startRun(null, position);
+  }
+
+  private parseBounds(
+    left: string | null,
+    right: string | null,
+  ): [ParsedFuguePosition | null, ParsedFuguePosition | null] {
+    const parsedLeft = this.parseBound(left, "left");
+    const parsedRight = this.parseBound(right, "right");
+
+    if (
+      parsedLeft !== null &&
+      parsedRight !== null &&
+      comparePositions(parsedLeft, parsedRight) >= 0
+    ) {
+      throw new RangeError(
+        `left must be strictly less than right: ${left} < ${right}`,
+      );
+    }
+
+    return [parsedLeft, parsedRight];
+  }
+
+  private parseBound(
+    value: string | null,
+    side: "left" | "right",
+  ): ParsedFuguePosition | null {
+    if (value === null) {
+      return null;
+    }
+
+    if (side === "left" && value === Fugue.FIRST) {
+      return null;
+    }
+
+    if (side === "right" && value === Fugue.LAST) {
+      return null;
+    }
+
+    if (side === "left" && value === Fugue.LAST) {
+      throw new InvalidPositionError(`left cannot be LAST (${Fugue.LAST})`);
+    }
+
+    if (side === "right" && value === Fugue.FIRST) {
+      throw new InvalidPositionError(`right cannot be FIRST (${Fugue.FIRST})`);
+    }
+
+    return parsePosition(value);
+  }
+
+  private startRunFromBounds(
+    left: ParsedFuguePosition | null,
+    right: ParsedFuguePosition | null,
+  ) {
+    const leftPrefix: ParsedFugueRunPrefix =
+      left === null
+        ? {
+            anchor: ANCHOR_MIN,
+            runId: RUN_MIN,
+          }
+        : {
+            anchor: left.anchor,
+            runId: left.runId,
+          };
+
+    const rightPrefix: ParsedFugueRunPrefix =
+      right === null
+        ? {
+            anchor: ANCHOR_MAX,
+            runId: RUN_MAX,
+          }
+        : {
+            anchor: right.anchor,
+            runId: right.runId,
+          };
+
+    if (compareRunPrefixes(leftPrefix, rightPrefix) >= 0) {
+      throw new RunPrefixExhaustedError(
+        `No run-prefix space between ${formatRunPrefix(leftPrefix.anchor, leftPrefix.runId)} and ${formatRunPrefix(rightPrefix.anchor, rightPrefix.runId)}`,
+      );
+    }
+
+    const anchor =
+      rightPrefix.anchor - leftPrefix.anchor >= 2n
+        ? (leftPrefix.anchor + rightPrefix.anchor) / 2n
+        : leftPrefix.anchor;
+
+    let minRunId = RUN_MIN;
+    let maxRunId = RUN_MAX;
+
+    if (anchor === leftPrefix.anchor) {
+      minRunId = maxBigInt(minRunId, leftPrefix.runId + 1n);
+    }
+
+    if (anchor === rightPrefix.anchor) {
+      maxRunId = minBigInt(maxRunId, rightPrefix.runId - 1n);
+    }
+
+    if (minRunId > maxRunId) {
+      throw new RunPrefixExhaustedError(
+        `No runId space available at anchor ${anchor} between ${leftPrefix.runId} and ${rightPrefix.runId}`,
+      );
+    }
+
+    const runId = this.randomBetween(minRunId, maxRunId);
+    return new FugueRun(anchor, runId, this.slotStep);
+  }
+
+  private randomBetween(minInclusive: bigint, maxInclusive: bigint) {
+    if (maxInclusive < minInclusive) {
+      throw new RangeError(
+        `Invalid random interval [${minInclusive}, ${maxInclusive}]`,
+      );
+    }
+
+    const span = maxInclusive - minInclusive + 1n;
+    const offset = this.randomBelow(span);
+    return minInclusive + offset;
+  }
+
+  private appendInsideRun(left: ParsedFuguePosition) {
+    const gap = SLOT_MAX - left.slot;
+
+    if (gap > 0n) {
+      const delta = gap >= this.slotStep ? this.slotStep : gap;
+      return formatPosition({
+        anchor: left.anchor,
+        runId: left.runId,
+        slot: left.slot + delta,
+      });
+    }
+
+    const slotPath = slotPathAfter(getSlotPath(left));
+    return formatPositionFromSlotPath(left.anchor, left.runId, slotPath);
+  }
+
+  private prependInsideRun(right: ParsedFuguePosition) {
+    const gap = right.slot - SLOT_MIN;
+
+    if (gap > 0n) {
+      const delta = gap >= this.slotStep ? this.slotStep : gap;
+      return formatPosition({
+        anchor: right.anchor,
+        runId: right.runId,
+        slot: right.slot - delta,
+      });
+    }
+
+    const slotPath = slotPathBefore(getSlotPath(right));
+    if (slotPath === null) {
+      throw new SlotExhaustedError(
+        `No slot space before ${formatPosition(right)} in run ${formatRunPrefix(right.anchor, right.runId)}`,
+      );
+    }
+
+    return formatPositionFromSlotPath(right.anchor, right.runId, slotPath);
+  }
+
+  private randomBelow(limit: bigint) {
+    if (limit <= 0n) {
+      throw new RangeError(`limit must be > 0, got ${limit}`);
+    }
+
+    if (limit === 1n) {
+      return 0n;
+    }
+
+    const bits = bitLength(limit - 1n);
+    const byteLength = Math.ceil(bits / 8);
+    const extraBits = byteLength * 8 - bits;
+    const mask = 0xff >>> extraBits;
+
+    for (;;) {
+      const bytes = this.randomBytes(byteLength);
+      if (bytes.length !== byteLength) {
+        throw new RangeError(
+          `randomBytes must return exactly ${byteLength} bytes, got ${bytes.length}`,
+        );
+      }
+
+      const sample = bytes.slice();
+      sample[0] = sample[0]! & mask;
+      const value = bytesToBigInt(sample);
+
+      if (value < limit) {
+        return value;
+      }
+    }
+  }
+
+  private defaultRandomBytes(byteLength: number) {
+    if (byteLength <= 0) {
+      throw new RangeError(`byteLength must be > 0, got ${byteLength}`);
+    }
+
+    const cryptoObject = globalThis.crypto;
+    if (cryptoObject?.getRandomValues !== undefined) {
+      const bytes = new Uint8Array(byteLength);
+      cryptoObject.getRandomValues(bytes);
+      return bytes;
+    }
+
+    if (this.allowInsecureRandom) {
+      if (!this.warnedInsecureRandom) {
+        this.onWarning(
+          "Fugue is using Math.random() as a fallback random source. This reduces collision and abuse resistance. Prefer options.randomBytes or crypto.getRandomValues.",
+        );
+        this.warnedInsecureRandom = true;
+      }
+
+      const bytes = new Uint8Array(byteLength);
+      for (let i = 0; i < byteLength; i++) {
+        bytes[i] = Math.floor(Math.random() * 256);
+      }
+      return bytes;
+    }
+
+    throw new SecureRandomUnavailableError(
+      "No secure random source found. Provide options.randomBytes, enable globalThis.crypto.getRandomValues, or set allowInsecureRandom: true.",
+    );
+  }
 }

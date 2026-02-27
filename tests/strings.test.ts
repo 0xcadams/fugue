@@ -1,418 +1,638 @@
-import { generateKeyBetween } from "fractional-indexing";
-import { describe, expect, test } from "vitest";
-import { Fugue } from "../src";
+import { describe, expect, test, vi } from "vitest";
 import {
-  getPrefix,
-  leftVersion,
-  nextOddValueSeq,
-  parseBase52,
-  sanitizeClientID,
-  stringifyBase52,
-  stringifyShortName,
-} from "../src/strings";
+  ANCHOR_WIDTH,
+  RUN_WIDTH,
+  SLOT_MAX,
+  SLOT_MID,
+  SLOT_WIDTH,
+  Fugue,
+  FugueRun,
+  RunPrefixExhaustedError,
+  SecureRandomUnavailableError,
+  SlotExhaustedError,
+  decode62,
+  encode62,
+  formatPosition,
+  formatRunPrefix,
+  getRunPrefix,
+  isFuguePosition,
+  parsePosition,
+  parseRunPrefix,
+  type FugueRandomBytes,
+} from "../src";
 
-describe("fugue", () => {
-  test("basic position creation", () => {
-    const fugue = new Fugue("client1");
+function makeDeterministicRandomBytes(seed: number): FugueRandomBytes {
+  let state = seed >>> 0;
 
-    // Create first position
-    const first = fugue.between(null, null);
-
-    // Insert after first
-    const second = fugue.between(first, null);
-
-    // Insert after second
-    const third = fugue.between(second, null);
-
-    // Insert before first
-    const zeroth = fugue.between(null, first);
-
-    // Insert between second and third (midpoint)
-    const secondAndHalf = fugue.between(second, third);
-
-    expect(first < second).toBe(true);
-    expect(first < third).toBe(true);
-    expect(third > second).toBe(true);
-    expect(secondAndHalf > second).toBe(true);
-    expect(secondAndHalf < third).toBe(true);
-
-    expect(zeroth < first).toBe(true);
-    expect(zeroth < second).toBe(true);
-    expect(zeroth < third).toBe(true);
-    expect(zeroth < secondAndHalf).toBe(true);
-
-    console.log({ first, second, third, zeroth, secondAndHalf });
-  });
-
-  test("differing clients with same clientID", () => {
-    const fugue1 = new Fugue("server");
-    const fugue2 = new Fugue("server");
-
-    const pos1 = fugue1.between(null, null);
-    const pos2 = fugue2.between(pos1, null);
-
-    expect(pos1).not.toBe(pos2);
-    expect(pos1 < pos2).toBe(true);
-
-    expect(pos1).toContain("server");
-    expect(pos2).toContain("server");
-  });
-
-  test("handles invalid inputs gracefully", () => {
-    const fugue = new Fugue("test");
-
-    // Test when left >= right
-    const pos1 = fugue.between("B", "A");
-    expect(pos1).toBeTruthy();
-    expect(pos1 > Fugue.FIRST).toBe(true);
-
-    // Test when right > LAST
-    const pos2 = fugue.between(null, "~~~");
-    expect(pos2 < Fugue.LAST).toBe(true);
-
-    // Test with completely invalid position strings
-    const pos3 = fugue.between("xyz", null); // No waypoint chars at all
-    expect(pos3).toBeTruthy();
-    expect(pos3 > Fugue.FIRST).toBe(true);
-
-    const pos4 = fugue.between("", null); // Empty string
-    expect(pos4).toBeTruthy();
-    expect(pos4 > Fugue.FIRST).toBe(true);
-  });
-
-  test("consistent ordering", () => {
-    const fugue = new Fugue("consistent");
-    const positions: string[] = [];
-
-    // Create a sequence of positions
-    let prev = null;
-    for (let i = 0; i < 10; i++) {
-      const pos = fugue.between(prev, null);
-      positions.push(pos);
-      prev = pos;
+  return (byteLength: number) => {
+    const out = new Uint8Array(byteLength);
+    for (let i = 0; i < byteLength; i++) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      out[i] = state & 0xff;
     }
+    return out;
+  };
+}
 
-    // Verify they maintain strict ordering
-    for (let i = 1; i < positions.length; i++) {
-      // These accesses are safe due to our loop bounds
-      const current = positions[i]!;
-      const previous = positions[i - 1]!;
-      expect(previous < current).toBe(true);
+function hasSingleRunTransition(labels: string[]) {
+  if (labels.length <= 1) {
+    return true;
+  }
+
+  let transitions = 0;
+  for (let i = 1; i < labels.length; i++) {
+    if (labels[i] !== labels[i - 1]) {
+      transitions++;
+    }
+  }
+
+  return transitions <= 1;
+}
+
+type FugueInternals = {
+  randomBelow(limit: bigint): bigint;
+  randomBetween(minInclusive: bigint, maxInclusive: bigint): bigint;
+  defaultRandomBytes(byteLength: number): Uint8Array;
+};
+
+function withMockedCrypto(value: Crypto | undefined, fn: () => void): void {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  if (descriptor === undefined || descriptor.configurable !== true) {
+    return;
+  }
+
+  Object.defineProperty(globalThis, "crypto", {
+    configurable: true,
+    enumerable: descriptor.enumerable ?? true,
+    writable: true,
+    value,
+  });
+
+  try {
+    fn();
+  } finally {
+    Object.defineProperty(globalThis, "crypto", descriptor);
+  }
+}
+
+describe("base62", () => {
+  test("encode62/decode62 roundtrip", () => {
+    const values = [0n, 1n, 61n, 62n, 123456789n, (1n << 64n) - 1n];
+
+    for (const value of values) {
+      const encoded = encode62(value, ANCHOR_WIDTH);
+      expect(encoded.length).toBe(ANCHOR_WIDTH);
+      expect(decode62(encoded)).toBe(value);
     }
   });
 
-  test("existing deterministic positions can be used", () => {
-    const internal = new Fugue("test");
-
-    const first = generateKeyBetween(null, null);
-    const last = generateKeyBetween(first, null);
-    // const third = generateKeyBetween(second, null);
-
-    const middle = internal.between(first, last);
-    const middle2 = internal.between(first, middle);
-
-    expect(first < middle).toBe(true);
-    expect(middle < last).toBe(true);
-    expect(first < middle2).toBe(true);
-    expect(middle2 < middle).toBe(true);
+  test("encode62 enforces width", () => {
+    expect(encode62(0n, 3)).toBe("000");
+    expect(() => encode62(62n ** 3n, 3)).toThrow();
   });
 
-  test("multiple clients maintain order", () => {
-    const fugue1 = new Fugue("client1");
-    const fugue2 = new Fugue("client2");
-
-    const first = fugue1.first();
-    const last = fugue1.after(first);
-
-    // simulating these happening in parallel
-    const middle1 = fugue1.between(first, last);
-    const middle2 = fugue2.between(first, last);
-
-    expect(middle1 < last).toBe(true);
-    expect(middle2 < last).toBe(true);
-    expect(middle1 > first).toBe(true);
-    expect(middle2 > first).toBe(true);
-    expect(middle1).not.toBe(middle2);
-
-    console.log({ first, last, middle1, middle2 });
-  });
-
-  test("boundary cases", () => {
-    const fugue = new Fugue("test");
-
-    // Test insertion at start
-    const firstPos = fugue.between(Fugue.FIRST, null);
-    expect(firstPos > Fugue.FIRST).toBe(true);
-
-    // Test insertion at end
-    const lastPos = fugue.before(Fugue.LAST);
-    expect(lastPos < Fugue.LAST).toBe(true);
-
-    // Test insertion between FIRST and LAST
-    const middlePos = fugue.between(Fugue.FIRST, Fugue.LAST);
-    expect(middlePos > Fugue.FIRST && middlePos < Fugue.LAST).toBe(true);
-  });
-
-  test("internal string handling", () => {
-    const fugue = new Fugue("test");
-
-    // Create many positions to force creation of positions with index >= 10
-    // This will exercise the stringifyShortName function's else branch
-    let prev = null;
-    let positions: string[] = [];
-    for (let i = 0; i < 100; i++) {
-      // Increased to ensure we get indices > 52
-      const pos = fugue.between(prev, null);
-      positions.push(pos);
-      prev = pos;
-    }
-
-    // Verify we have positions with different lengths (indicating indices > 52)
-    const lengths = new Set(positions.map((p) => p.length));
-    expect(lengths.size).toBeGreaterThan(1);
-
-    // Test getPrefix edge case with various invalid position strings
-    const invalidPositions = [
-      "", // Empty string
-      "ABC", // No waypoint chars
-      "XYZ123", // No valid waypoint chars
-      "test", // Just a string without waypoint markers
-    ];
-
-    for (const invalidPos of invalidPositions) {
-      const nextPos = fugue.between(invalidPos, null);
-      expect(nextPos).toBeTruthy();
-      expect(nextPos > Fugue.FIRST).toBe(true);
-    }
-  });
-
-  test("fuzzy ordering with multiple insertions", () => {
-    const fugue = new Fugue("test");
-
-    // Create initial positions
-    const start = fugue.between(null, null);
-    const end = fugue.between(start, null);
-
-    // Create multiple positions between start and end
-    const middlePositions: string[] = [];
-    for (let i = 0; i < 20; i++) {
-      // Randomly choose to insert at beginning, middle, or end of the range
-      let insertAfter = start as string;
-      if (middlePositions.length > 0 && Math.random() >= 0.5) {
-        const randomIndex = Math.floor(Math.random() * middlePositions.length);
-        insertAfter = middlePositions[randomIndex]!;
-      }
-
-      const pos = fugue.between(insertAfter, end);
-      middlePositions.push(pos);
-    }
-
-    // Verify all positions maintain strict ordering
-    const allPositions = [start, ...middlePositions, end];
-    for (let i = 1; i < allPositions.length; i++) {
-      const prev = allPositions[i - 1]!;
-      const curr = allPositions[i]!;
-      expect(prev < curr).toBe(true);
-    }
-
-    // Verify we can still insert between any two adjacent positions
-    for (let i = 0; i < allPositions.length - 1; i++) {
-      const pos1 = allPositions[i]!;
-      const pos2 = allPositions[i + 1]!;
-      const newPos = fugue.between(pos1, pos2);
-      expect(pos1 < newPos).toBe(true);
-      expect(newPos < pos2).toBe(true);
-    }
-  });
-
-  test("basic position creation", () => {
-    const fugue = new Fugue("basic");
-
-    const pos = fugue.first();
-
-    // By definition, FIRST < pos < LAST
-    expect(pos > Fugue.FIRST).toBe(true);
-    expect(pos < Fugue.LAST).toBe(true);
-  });
-
-  test("sequential creation", () => {
-    const fugue = new Fugue("sequential");
-
-    const pos1 = fugue.between(null, null);
-    const pos2 = fugue.between(pos1, null);
-    expect(pos1 < pos2).toBe(true);
-  });
-
-  test("inserting in the middle", () => {
-    const fugue = new Fugue("inserting");
-
-    const pos1 = fugue.first();
-    const pos2 = fugue.after(pos1);
-    const pos3 = fugue.between(pos1, pos2);
-
-    expect(pos1 < pos3).toBe(true);
-    expect(pos3 < pos2).toBe(true);
-  });
-
-  test("extensive insertion ordering", () => {
-    const fugue = new Fugue("extensive");
-
-    // Insert a sequence of positions in an array, ensuring we always insert
-    // a 'middle' position each time to check correctness of ordering
-    const positions: string[] = [];
-    positions.push(fugue.between(null, null)); // first item
-    for (let i = 0; i < 5; i++) {
-      const left = positions[Math.floor(positions.length / 2)];
-      const right = null; // always append at the end after 'left'
-      const newPos = fugue.between(left ?? null, right);
-      positions.push(newPos);
-    }
-
-    // Sort them
-    const sorted = [...positions].sort();
-    // They should remain unique
-    const uniqueSet = new Set(sorted);
-
-    expect(positions.length).toEqual(uniqueSet.size);
-    expect(positions).toEqual(sorted); // they should already be sorted in time
-  });
-
-  test("positions from different Fugue instances do not necessarily compare meaningfully", () => {
-    // If you have a different client ID, you can still compare
-    // them lexicographically, but there is no guarantee they'd
-    // interleave in a predictable way with another client's positions
-    const fugueA = new Fugue("A");
-    const fugueB = new Fugue("B");
-
-    const a1 = fugueA.between(null, null);
-    const b1 = fugueB.between(null, null);
-
-    // Lex compare might place a1 < b1 or b1 < a1, depending on the
-    // sanitized ID. We can at least ensure they're not equal
-    expect(a1).not.toBe(b1);
-  });
-
-  test("cache size is limited", () => {
-    const fugue = new Fugue("test");
-    const cacheSize = fugue.cacheSize;
-    expect(cacheSize).toBe(0);
-
-    const first = fugue.between(null, null);
-
-    for (let i = 0; i < 1300; i++) {
-      const fugue2 = new Fugue(`other${i}`);
-
-      const newPos = fugue2.between(first, null);
-
-      fugue.between(first, newPos);
-    }
-
-    expect(fugue.cacheSize).toBeLessThanOrEqual(1000);
-  });
-
-  test("sanitized clientID does not contain '.' or ','", () => {
-    // We'll rely on the constructor's behavior:
-    const fugueBad = new Fugue("some,bad.id");
-    expect(fugueBad.clientID.includes(".")).toBe(false);
-    expect(fugueBad.clientID.includes(",")).toBe(false);
-  });
-
-  test("same client ID produces deterministic positions", () => {
-    const fugue1 = new Fugue("deterministic");
-    const fugue2 = new Fugue("deterministic");
-
-    // Create a sequence of positions with first instance
-    const pos1_1 = fugue1.between(null, null);
-    const pos1_2 = fugue1.after(pos1_1);
-    const pos1_3 = fugue1.after(pos1_2);
-
-    // Create the same sequence with second instance
-    const pos2_1 = fugue2.between(null, null);
-    const pos2_2 = fugue2.after(pos2_1);
-    const pos2_3 = fugue2.after(pos2_2);
-
-    // Verify positions are exactly the same
-    expect(pos1_1).toBe(pos2_1);
-    expect(pos1_2).toBe(pos2_2);
-    expect(pos1_3).toBe(pos2_3);
+  test("encode62/decode62 validate inputs", () => {
+    expect(() => encode62(10n, 0)).toThrow(RangeError);
+    expect(() => encode62(-1n, 2)).toThrow(RangeError);
+    expect(() => decode62("A!")).toThrow();
   });
 });
 
-describe("functions", () => {
-  test("stringifyShortName", () => {
-    expect(stringifyShortName(-1)).toBe("A");
-    expect(stringifyShortName(0)).toBe("0");
-    expect(stringifyShortName(1)).toBe("1");
-    expect(stringifyShortName(10)).toBe("B0");
-    expect(stringifyShortName(11)).toBe("B1");
-    expect(stringifyShortName(15)).toBe("B5");
-    expect(stringifyShortName(100)).toBe("K0");
-    expect(stringifyShortName(101)).toBe("K1");
-    expect(stringifyShortName(2222)).toBe("EO2");
+describe("position parsing", () => {
+  test("formatPosition/parsePosition roundtrip", () => {
+    const input = {
+      anchor: 123456789n,
+      runId: 987654321n,
+      slot: SLOT_MID + 123n,
+    };
+
+    const position = formatPosition(input);
+    expect(position.length).toBe(ANCHOR_WIDTH + RUN_WIDTH + SLOT_WIDTH + 2);
+    expect(isFuguePosition(position)).toBe(true);
+
+    const parsed = parsePosition(position);
+    expect(parsed).toEqual(input);
   });
 
-  test("stringifyBase52", () => {
-    expect(stringifyBase52(0)).toBe("A");
-    expect(stringifyBase52(1)).toBe("B");
-    expect(stringifyBase52(10)).toBe("K");
-    expect(stringifyBase52(100)).toBe("Bw");
-    expect(stringifyBase52(101)).toBe("Bx");
-    expect(stringifyBase52(2222)).toBe("qm");
-    expect(stringifyBase52(55555555)).toBe("HfFkD");
+  test("formatPosition/parsePosition roundtrip with subslots", () => {
+    const input = {
+      anchor: 987654321n,
+      runId: 123456789n,
+      slot: SLOT_MID,
+      subslots: [11n, SLOT_MID + 9n],
+    };
+
+    const position = formatPosition(input);
+    expect(isFuguePosition(position)).toBe(true);
+    expect(parsePosition(position)).toEqual(input);
   });
 
-  test("nextOddValueSeq", () => {
-    expect(nextOddValueSeq(0)).toBe(2);
-    expect(nextOddValueSeq(1)).toBe(3);
-    expect(nextOddValueSeq(2)).toBe(4);
-    expect(nextOddValueSeq(3)).toBe(5);
-    expect(nextOddValueSeq(4)).toBe(6);
-    expect(nextOddValueSeq(5)).toBe(7);
-    expect(nextOddValueSeq(52)).toBe(54);
-    expect(nextOddValueSeq(52 * 52)).toBe(52 * 52 + 2);
-    expect(nextOddValueSeq(Math.pow(52, 800))).toBe(Math.pow(52, 800) + 2);
+  test("run prefix parsing", () => {
+    const prefix = formatRunPrefix(77n, 88n);
+    expect(parseRunPrefix(prefix)).toEqual({ anchor: 77n, runId: 88n });
   });
 
-  test("parseBase52", () => {
-    expect(parseBase52("A")).toBe(0);
-    expect(parseBase52("B")).toBe(1);
-    expect(parseBase52("K")).toBe(10);
-    expect(parseBase52("B0")).toBe(35);
-    expect(parseBase52("B1")).toBe(36);
-    expect(parseBase52("B5")).toBe(40);
-    expect(parseBase52("K0")).toBe(503);
-    expect(parseBase52("K1")).toBe(504);
-    expect(parseBase52("HfFkD")).toBe(55555555);
+  test("invalid position strings are rejected", () => {
+    expect(isFuguePosition("not-a-position")).toBe(false);
+    expect(() => parsePosition("not-a-position")).toThrow();
   });
 
-  test("getPrefix", () => {
-    expect(getPrefix("A")).toBe(null);
-    expect(getPrefix(".C")).toBe(".");
-    expect(getPrefix(".0")).toBe(".");
-    expect(getPrefix(".00000")).toBe(".0000");
-    expect(getPrefix(".999")).toBe(".99");
-    expect(getPrefix("A.000")).toBe("A.00");
-    expect(getPrefix("A.0.000")).toBe("A.0.00");
-    expect(getPrefix("A.0.0")).toBe("A.0.");
+  test("parsePosition validates separators and ranges", () => {
+    const validAnchor = encode62(1n, ANCHOR_WIDTH);
+    const validRun = encode62(2n, RUN_WIDTH);
+    const validSlot = encode62(3n, SLOT_WIDTH);
 
-    expect(getPrefix("longid.otherid")).toBe("longid.");
-    expect(getPrefix("longid.otherid1.otherid2")).toBe("longid.otherid1.");
+    const badSeparator = `${validAnchor}.${validRun}!${validSlot}`;
+    expect(isFuguePosition(badSeparator)).toBe(false);
+    expect(() => parsePosition(badSeparator)).toThrow();
+
+    const tooLargeAnchor = `${encode62(1n << 64n, ANCHOR_WIDTH)}!${validRun}!${validSlot}`;
+    expect(isFuguePosition(tooLargeAnchor)).toBe(false);
+    expect(() => parsePosition(tooLargeAnchor)).toThrow();
+
+    const badSubslotWidth = `${validAnchor}!${validRun}!${validSlot}!abc`;
+    expect(isFuguePosition(badSubslotWidth)).toBe(false);
+    expect(() => parsePosition(badSubslotWidth)).toThrow();
+
+    const invalidRunChars = `${validAnchor}!${"@".repeat(RUN_WIDTH)}!${validSlot}`;
+    expect(isFuguePosition(invalidRunChars)).toBe(false);
+    expect(() => parsePosition(invalidRunChars)).toThrow();
+
+    const invalidSlotChars = `${validAnchor}!${validRun}!${"@".repeat(SLOT_WIDTH)}`;
+    expect(isFuguePosition(invalidSlotChars)).toBe(false);
+    expect(() => parsePosition(invalidSlotChars)).toThrow();
+
+    const invalidSubslotChars = `${validAnchor}!${validRun}!${validSlot}!${"@".repeat(SLOT_WIDTH)}`;
+    expect(isFuguePosition(invalidSubslotChars)).toBe(false);
+    expect(() => parsePosition(invalidSubslotChars)).toThrow();
   });
 
-  test("leftVersion", () => {
-    expect(leftVersion("")).toBe("");
-    expect(leftVersion("id.P")).toBe("id.O");
-    expect(leftVersion("longid.otherid.H")).toBe("longid.otherid.G");
+  test("parseRunPrefix validates format", () => {
+    expect(() => parseRunPrefix("abc")).toThrow();
+    expect(() => parseRunPrefix("abc!!")).toThrow();
+    expect(() => parseRunPrefix("a!b!c!")).toThrow();
+
+    const invalidRangePrefix = `${encode62(1n << 64n, ANCHOR_WIDTH)}!${encode62(0n, RUN_WIDTH)}!`;
+    expect(() => parseRunPrefix(invalidRangePrefix)).toThrow();
   });
 
-  test("sanitizeClientID", () => {
-    expect(sanitizeClientID("test")).toBe("test");
-    expect(sanitizeClientID("test,bad.id")).toBe("testbadid");
+  test("formatPosition validates field ranges", () => {
+    expect(() => formatPosition({ anchor: -1n, runId: 0n, slot: 0n })).toThrow(
+      RangeError,
+    );
+    expect(() =>
+      formatPosition({ anchor: 0n, runId: 1n << 96n, slot: 0n }),
+    ).toThrow(RangeError);
+    expect(() => formatPosition({ anchor: 0n, runId: 0n, slot: -1n })).toThrow(
+      RangeError,
+    );
+  });
+});
 
-    expect(sanitizeClientID("abcd123")).toBe("abcd123");
+describe("fugue", () => {
+  test("basic ordering with before/after/between", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(1) });
 
-    expect(() => sanitizeClientID("")).toThrow();
-    expect(() => sanitizeClientID(",")).toThrow();
-    expect(() => sanitizeClientID("~~~~")).toThrow();
+    const first = fugue.first();
+    const second = fugue.after(first);
+    const middle = fugue.between(first, second);
+    const beforeFirst = fugue.before(first);
+
+    expect(Fugue.FIRST < beforeFirst).toBe(true);
+    expect(beforeFirst < first).toBe(true);
+    expect(first < middle).toBe(true);
+    expect(middle < second).toBe(true);
+    expect(second < Fugue.LAST).toBe(true);
+
+    expect(first).toMatchInlineSnapshot(
+      `"AzL8n0Y58m7!0DHgRSMYf32zxWYdj!AzL8n0Y58m8"`,
+    );
+    expect(second).toMatchInlineSnapshot(
+      `"GU0iBVp7iAB!0topbVAhDosEujAgZ!AzL8n0Y58m8"`,
+    );
+    expect(middle).toMatchInlineSnapshot(
+      `"DjfvUGBbQT9!1ZT98vOleX0RHtryW!AzL8n0Y58m8"`,
+    );
+    expect(beforeFirst).toMatchInlineSnapshot(
+      `"5UfZOVH2ZO3!1cynvthfN0t8wKym4!AzL8n0Y58m8"`,
+    );
+  });
+
+  test("between in same run uses slot midpoint", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(2) });
+
+    const left = formatPosition({ anchor: 50n, runId: 99n, slot: 1000n });
+    const right = formatPosition({ anchor: 50n, runId: 99n, slot: 2000n });
+    const middle = fugue.between(left, right);
+
+    const parsed = parsePosition(middle);
+    expect(parsed.anchor).toBe(50n);
+    expect(parsed.runId).toBe(99n);
+    expect(parsed.slot).toBe(1500n);
+  });
+
+  test("same-run adjacent slots use escape-hatch subslot", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(3) });
+
+    const left = formatPosition({ anchor: 1n, runId: 1n, slot: 10n });
+    const right = formatPosition({ anchor: 1n, runId: 1n, slot: 11n });
+    const inserted = fugue.between(left, right);
+
+    expect(left < inserted).toBe(true);
+    expect(inserted < right).toBe(true);
+
+    const parsed = parsePosition(inserted);
+    expect(parsed.anchor).toBe(1n);
+    expect(parsed.runId).toBe(1n);
+    expect(parsed.slot).toBe(10n);
+    expect(parsed.subslots).toEqual([SLOT_MID]);
+  });
+
+  test("same-run escape-hatch can recurse deeper", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(13) });
+
+    const left = formatPosition({
+      anchor: 1n,
+      runId: 1n,
+      slot: 10n,
+      subslots: [50n],
+    });
+    const right = formatPosition({
+      anchor: 1n,
+      runId: 1n,
+      slot: 10n,
+      subslots: [51n],
+    });
+    const inserted = fugue.between(left, right);
+
+    expect(left < inserted).toBe(true);
+    expect(inserted < right).toBe(true);
+
+    const parsed = parsePosition(inserted);
+    expect(parsed.slot).toBe(10n);
+    expect(parsed.subslots).toEqual([50n, SLOT_MID]);
+  });
+
+  test("same-run prefix-vs-zero-descendant can be truly exhausted", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(14) });
+
+    const left = formatPosition({ anchor: 1n, runId: 1n, slot: 10n });
+    const right = formatPosition({
+      anchor: 1n,
+      runId: 1n,
+      slot: 10n,
+      subslots: [0n],
+    });
+
+    expect(() => fugue.between(left, right)).toThrow(SlotExhaustedError);
+  });
+
+  test("startRun creates contiguous run blocks", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(4) });
+
+    const left = fugue.first();
+    const right = fugue.after(left);
+
+    const runA = fugue.startRun(left, right);
+    const runB = fugue.startRun(left, right);
+
+    const keys = [
+      { key: runA.first, label: "A" },
+      { key: runA.append(), label: "A" },
+      { key: runA.append(), label: "A" },
+      { key: runB.first, label: "B" },
+      { key: runB.append(), label: "B" },
+      { key: runB.append(), label: "B" },
+    ].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+
+    const labels = keys.map((entry) => entry.label);
+    expect(hasSingleRunTransition(labels)).toBe(true);
+  });
+
+  test("run append/prepend keep shared prefix", () => {
+    const run = new FugueRun(222n, 333n, 10n);
+
+    const first = run.first;
+    const next = run.append();
+    const prev = run.prepend();
+
+    expect(getRunPrefix(first)).toBe(getRunPrefix(next));
+    expect(getRunPrefix(first)).toBe(getRunPrefix(prev));
+
+    expect(parsePosition(next).slot).toBe(parsePosition(first).slot + 10n);
+    expect(parsePosition(prev).slot).toBe(parsePosition(first).slot - 10n);
+  });
+
+  test("startRun rejects same-run boundaries", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(5) });
+
+    const left = formatPosition({ anchor: 8n, runId: 9n, slot: 100n });
+    const right = formatPosition({ anchor: 8n, runId: 9n, slot: 200n });
+
+    expect(() => fugue.startRun(left, right)).toThrow(RunPrefixExhaustedError);
+  });
+
+  test("legacy constructor signature is accepted", () => {
+    const warnings: string[] = [];
+
+    const fugue = new Fugue("legacy-client", {
+      randomBytes: makeDeterministicRandomBytes(6),
+      onWarning: (message: string) => {
+        warnings.push(message);
+      },
+    });
+
+    expect(fugue.first()).toBeTruthy();
+    expect(warnings.length).toBe(1);
+  });
+
+  test("custom randomBytes enables deterministic generation", () => {
+    const a = new Fugue({ randomBytes: makeDeterministicRandomBytes(7) });
+    const b = new Fugue({ randomBytes: makeDeterministicRandomBytes(7) });
+
+    const a1 = a.first();
+    const a2 = a.after(a1);
+    const a3 = a.after(a2);
+
+    const b1 = b.first();
+    const b2 = b.after(b1);
+    const b3 = b.after(b2);
+
+    expect(a1).toBe(b1);
+    expect(a2).toBe(b2);
+    expect(a3).toBe(b3);
+  });
+
+  test("startRunAfter/startRunBefore wrappers work", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(8) });
+    const first = fugue.first();
+    const second = fugue.after(first);
+
+    const beforeRun = fugue.startRunBefore(first);
+    const afterRun = fugue.startRunAfter(second);
+
+    expect(beforeRun.first < first).toBe(true);
+    expect(second < afterRun.first).toBe(true);
+  });
+
+  test("default warning path is used for legacy constructor", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      new Fugue("legacy-with-default-warning");
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("constructor and run validate slot step", () => {
+    expect(() => new Fugue({ slotStep: 0n })).toThrow(RangeError);
+    expect(() => new Fugue({ slotStep: SLOT_MAX + 1n })).toThrow(RangeError);
+    expect(() => new FugueRun(1n, 1n, 0n)).toThrow(RangeError);
+  });
+
+  test("run append/prepend exhaustion paths", () => {
+    const appendRun = new FugueRun(1n, 1n, SLOT_MAX, SLOT_MAX);
+    expect(() => appendRun.append()).toThrow(SlotExhaustedError);
+
+    const prependRun = new FugueRun(1n, 1n, SLOT_MAX, 0n);
+    expect(() => prependRun.prepend()).toThrow(SlotExhaustedError);
+  });
+
+  test("between validates bound ordering and special sentinels", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(9) });
+
+    const first = fugue.first();
+    const second = fugue.after(first);
+
+    expect(() => fugue.between(second, first)).toThrow(RangeError);
+    expect(() => fugue.between(Fugue.LAST, null)).toThrow();
+    expect(() => fugue.between(null, Fugue.FIRST)).toThrow();
+
+    const inBounds = fugue.between(Fugue.FIRST, Fugue.LAST);
+    expect(inBounds > Fugue.FIRST && inBounds < Fugue.LAST).toBe(true);
+  });
+
+  test("between validates ordering across runId and slot-path forms", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(15) });
+
+    const higherRunId = formatPosition({ anchor: 20n, runId: 9n, slot: 1n });
+    const lowerRunId = formatPosition({ anchor: 20n, runId: 8n, slot: 9n });
+    expect(() => fugue.between(higherRunId, lowerRunId)).toThrow(RangeError);
+
+    const higherSlot = formatPosition({ anchor: 20n, runId: 7n, slot: 6n });
+    const lowerSlot = formatPosition({ anchor: 20n, runId: 7n, slot: 5n });
+    expect(() => fugue.between(higherSlot, lowerSlot)).toThrow(RangeError);
+
+    const longerPath = formatPosition({
+      anchor: 20n,
+      runId: 7n,
+      slot: 5n,
+      subslots: [1n],
+    });
+    const shorterPrefix = formatPosition({ anchor: 20n, runId: 7n, slot: 5n });
+    expect(() => fugue.between(longerPath, shorterPrefix)).toThrow(RangeError);
+
+    expect(() => fugue.between(shorterPrefix, shorterPrefix)).toThrow(
+      RangeError,
+    );
+  });
+
+  test("deterministic single-candidate runId path", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(10) });
+
+    const left = formatPosition({ anchor: 10n, runId: 1n, slot: 100n });
+    const right = formatPosition({ anchor: 10n, runId: 3n, slot: 200n });
+    const inserted = fugue.between(left, right);
+
+    expect(parsePosition(inserted).runId).toBe(2n);
+  });
+
+  test("run-prefix exhaustion paths", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(11) });
+    const anchorMax = (1n << 64n) - 1n;
+    const runMax = (1n << 96n) - 1n;
+
+    const leftNoSpace = formatPosition({ anchor: 0n, runId: 1n, slot: 100n });
+    const rightNoSpace = formatPosition({ anchor: 0n, runId: 2n, slot: 200n });
+    expect(() => fugue.between(leftNoSpace, rightNoSpace)).toThrow(
+      RunPrefixExhaustedError,
+    );
+
+    const rightSentinelEqual = formatPosition({
+      anchor: 0n,
+      runId: 0n,
+      slot: 5n,
+    });
+    const before = fugue.between(null, rightSentinelEqual);
+    expect(before < rightSentinelEqual).toBe(true);
+
+    const leftBoundaryExhausted = formatPosition({
+      anchor: anchorMax - 1n,
+      runId: runMax,
+      slot: SLOT_MAX,
+    });
+    const afterLeftBoundary = fugue.between(leftBoundaryExhausted, null);
+    expect(leftBoundaryExhausted < afterLeftBoundary).toBe(true);
+    expect(parsePosition(afterLeftBoundary)).toEqual({
+      anchor: anchorMax - 1n,
+      runId: runMax,
+      slot: SLOT_MAX,
+      subslots: [SLOT_MID],
+    });
+
+    const rightBoundaryExhausted = formatPosition({
+      anchor: 0n,
+      runId: 1n,
+      slot: 0n,
+    });
+    expect(() => fugue.between(null, rightBoundaryExhausted)).toThrow(
+      SlotExhaustedError,
+    );
+
+    const rightBoundaryWithTail = formatPosition({
+      anchor: 0n,
+      runId: 1n,
+      slot: 0n,
+      subslots: [9n],
+    });
+    const beforeTail = fugue.between(null, rightBoundaryWithTail);
+    expect(beforeTail < rightBoundaryWithTail).toBe(true);
+    expect(parsePosition(beforeTail)).toEqual({
+      anchor: 0n,
+      runId: 1n,
+      slot: 0n,
+    });
+
+    const leftBoundaryWithTail = formatPosition({
+      anchor: anchorMax - 1n,
+      runId: runMax,
+      slot: SLOT_MAX,
+      subslots: [9n],
+    });
+    const afterTail = fugue.between(leftBoundaryWithTail, null);
+    expect(leftBoundaryWithTail < afterTail).toBe(true);
+  });
+
+  test("same-run between handles prefix and exhausted-level cases", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(16) });
+
+    const leftPrefix = formatPosition({ anchor: 3n, runId: 4n, slot: 10n });
+    const rightWithPositive = formatPosition({
+      anchor: 3n,
+      runId: 4n,
+      slot: 10n,
+      subslots: [5n],
+    });
+    const betweenPositive = fugue.between(leftPrefix, rightWithPositive);
+    expect(parsePosition(betweenPositive)).toEqual({
+      anchor: 3n,
+      runId: 4n,
+      slot: 10n,
+      subslots: [2n],
+    });
+
+    const rightWithZeroTail = formatPosition({
+      anchor: 3n,
+      runId: 4n,
+      slot: 10n,
+      subslots: [0n, 5n],
+    });
+    const betweenZeroTail = fugue.between(leftPrefix, rightWithZeroTail);
+    expect(parsePosition(betweenZeroTail)).toEqual({
+      anchor: 3n,
+      runId: 4n,
+      slot: 10n,
+      subslots: [0n],
+    });
+
+    const leftWithTail = formatPosition({
+      anchor: 3n,
+      runId: 4n,
+      slot: 10n,
+      subslots: [9n],
+    });
+    const rightNextSlot = formatPosition({ anchor: 3n, runId: 4n, slot: 11n });
+    const betweenTailAndNext = fugue.between(leftWithTail, rightNextSlot);
+    expect(leftWithTail < betweenTailAndNext).toBe(true);
+    expect(betweenTailAndNext < rightNextSlot).toBe(true);
+
+    const leftWithMaxTail = formatPosition({
+      anchor: 3n,
+      runId: 4n,
+      slot: 10n,
+      subslots: [SLOT_MAX],
+    });
+    const betweenMaxTailAndNext = fugue.between(leftWithMaxTail, rightNextSlot);
+    expect(leftWithMaxTail < betweenMaxTailAndNext).toBe(true);
+    expect(betweenMaxTailAndNext < rightNextSlot).toBe(true);
+  });
+
+  test("boundary fallback appends/prepends inside existing run", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(12) });
+    const anchorMax = (1n << 64n) - 1n;
+    const runMax = (1n << 96n) - 1n;
+
+    const left = formatPosition({
+      anchor: anchorMax - 1n,
+      runId: runMax,
+      slot: SLOT_MAX - 2n,
+    });
+    const appended = fugue.between(left, null);
+    expect(parsePosition(appended).slot).toBe(SLOT_MAX);
+
+    const right = formatPosition({ anchor: 0n, runId: 1n, slot: 2n });
+    const prepended = fugue.between(null, right);
+    expect(parsePosition(prepended).slot).toBe(0n);
+  });
+
+  test("random source validation and private error paths", () => {
+    const badRandom = new Fugue({
+      randomBytes: () => new Uint8Array(0),
+    });
+    expect(() => badRandom.first()).toThrow(RangeError);
+
+    const internals = badRandom as unknown as FugueInternals;
+    expect(() => internals.randomBelow(0n)).toThrow(RangeError);
+    expect(() => internals.randomBetween(5n, 4n)).toThrow(RangeError);
+    expect(() => internals.defaultRandomBytes(0)).toThrow(RangeError);
+  });
+
+  test("default random bytes use crypto when available", () => {
+    const fugue = new Fugue();
+    const internals = fugue as unknown as FugueInternals;
+
+    const bytes = internals.defaultRandomBytes(8);
+    expect(bytes.length).toBe(8);
+    expect(fugue.first()).toBeTruthy();
+  });
+
+  test("insecure random fallback and secure-random error", () => {
+    withMockedCrypto(undefined, () => {
+      const warnings: string[] = [];
+
+      const insecure = new Fugue({
+        allowInsecureRandom: true,
+        onWarning: (message: string) => {
+          warnings.push(message);
+        },
+      });
+      const insecureInternals = insecure as unknown as FugueInternals;
+
+      const bytes1 = insecureInternals.defaultRandomBytes(8);
+      const bytes2 = insecureInternals.defaultRandomBytes(8);
+
+      expect(bytes1.length).toBe(8);
+      expect(bytes2.length).toBe(8);
+      expect(warnings.length).toBe(1);
+
+      const secureRequired = new Fugue();
+      const secureInternals = secureRequired as unknown as FugueInternals;
+      expect(() => secureInternals.defaultRandomBytes(8)).toThrow(
+        SecureRandomUnavailableError,
+      );
+    });
   });
 });

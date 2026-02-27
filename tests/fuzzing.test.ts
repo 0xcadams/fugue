@@ -1,345 +1,240 @@
 import { describe, expect, test } from "vitest";
-import { Fugue } from "../src";
+import {
+  Fugue,
+  RunPrefixExhaustedError,
+  SlotExhaustedError,
+  getRunPrefix,
+  isFuguePosition,
+  type FugueRandomBytes,
+} from "../src";
+
+function makePRNG(seed: number) {
+  let state = seed >>> 0;
+
+  const next = () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return (state >>> 0) / 0x100000000;
+  };
+
+  const nextInt = (max: number) => Math.floor(next() * max);
+
+  return {
+    next,
+    nextInt,
+    pick<T>(items: T[]): T {
+      return items[nextInt(items.length)]!;
+    },
+  };
+}
+
+function makeDeterministicRandomBytes(seed: number): FugueRandomBytes {
+  const rng = makePRNG(seed);
+
+  return (byteLength: number) => {
+    const out = new Uint8Array(byteLength);
+    for (let i = 0; i < byteLength; i++) {
+      out[i] = rng.nextInt(256);
+    }
+    return out;
+  };
+}
+
+function sortedInsert(values: string[], value: string) {
+  let low = 0;
+  let high = values.length;
+
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (values[mid]! < value) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  values.splice(low, 0, value);
+}
+
+function verifySorted(values: string[]) {
+  for (let i = 1; i < values.length; i++) {
+    expect(values[i - 1]! < values[i]!).toBe(true);
+  }
+}
 
 describe("fuzzing", () => {
-  test("random operations maintain ordering invariants", () => {
-    const fugue = new Fugue("client1");
-    const positions: string[] = [];
-    const maxOperations = 30_000;
-
-    // Helper to verify all positions are in sorted order
-    const verifyOrdering = () => {
-      for (let i = 0; i < positions.length - 1; i++) {
-        expect(positions[i]! < positions[i + 1]!).toBe(true);
-      }
-    };
-
-    // Helper to insert a position and maintain sorted order
-    const insertPosition = (pos: string) => {
-      // Find correct insertion point
-      let insertIndex = 0;
-      while (insertIndex < positions.length && positions[insertIndex]! < pos) {
-        insertIndex++;
-      }
-      positions.splice(insertIndex, 0, pos);
-    };
-
-    // Start with a few initial positions
-    positions.push(fugue.first());
-    positions.push(fugue.after(positions[0]!));
-    positions.push(fugue.before(positions[0]!));
-    positions.sort(); // Ensure initial positions are sorted
-
-    for (let i = 0; i < maxOperations; i++) {
-      const operation = Math.floor(Math.random() * 4);
-
-      try {
-        let newPos: string;
-
-        switch (operation) {
-          case 0: {
-            // Insert between two random positions
-            if (positions.length >= 2) {
-              const idx1 = Math.floor(Math.random() * positions.length);
-              const idx2 = Math.floor(Math.random() * positions.length);
-              const leftIdx = Math.min(idx1, idx2);
-              const rightIdx = Math.max(idx1, idx2);
-
-              if (leftIdx !== rightIdx) {
-                const left = positions[leftIdx]!;
-                const right = positions[rightIdx]!;
-                newPos = fugue.between(left, right);
-
-                // Verify the new position is correctly ordered
-                expect(newPos > left).toBe(true);
-                expect(newPos < right).toBe(true);
-
-                insertPosition(newPos);
-              }
-            }
-            break;
-          }
-
-          case 1: {
-            // Insert after a random position
-            if (positions.length > 0) {
-              const randomPos =
-                positions[Math.floor(Math.random() * positions.length)]!;
-              newPos = fugue.after(randomPos);
-
-              // Verify the new position is greater than the reference
-              expect(newPos > randomPos).toBe(true);
-
-              insertPosition(newPos);
-            }
-            break;
-          }
-
-          case 2: {
-            // Insert before a random position
-            if (positions.length > 0) {
-              const randomPos =
-                positions[Math.floor(Math.random() * positions.length)]!;
-              newPos = fugue.before(randomPos);
-
-              // Verify the new position is less than the reference
-              expect(newPos < randomPos).toBe(true);
-
-              insertPosition(newPos);
-            }
-            break;
-          }
-
-          case 3: {
-            // Insert at beginning with between(null, first)
-            if (positions.length > 0) {
-              newPos = fugue.before(positions[0]!);
-
-              // Verify the new position is less than the first position
-              expect(newPos < positions[0]!).toBe(true);
-
-              insertPosition(newPos);
-            }
-            break;
-          }
-        }
-
-        // Verify ordering is maintained after each operation
-        if (positions.length > 1) {
-          verifyOrdering();
-        }
-
-        // Limit array size to prevent memory issues
-        if (positions.length > 100) {
-          // Remove some positions randomly while maintaining order
-          const toRemove = Math.floor(positions.length * 0.3);
-          for (let j = 0; j < toRemove; j++) {
-            const removeIdx = Math.floor(Math.random() * positions.length);
-            positions.splice(removeIdx, 1);
-          }
-        }
-      } catch (error) {
-        console.error(`Error in operation ${i}, type ${operation}:`, error);
-        console.error(`Positions at time of error:`, positions);
-        throw error;
-      }
-    }
-
-    // Final verification
-    verifyOrdering();
-  });
-
-  test("random operations across seeds and clients maintain stronger invariants", () => {
-    // Simple xorshift32 PRNG to make fuzzing deterministic by seed
-    const makePRNG = (seed: number) => {
-      let x = seed | 0;
-      const next = () => {
-        x ^= x << 13;
-        x ^= x >>> 17;
-        x ^= x << 5;
-        return ((x >>> 0) / 0x100000000);
-      };
-      const nextInt = (n: number) => Math.floor(next() * n);
-      const pick = <T,>(arr: T[]) => arr[nextInt(arr.length)]!;
-      return { next, nextInt, pick };
-    };
-
+  test("mixed operations keep ordering and uniqueness", () => {
     const seeds = [0x1, 0x2a2a2a2a, 0x12345678, 0x7fffffff, 0xdeadbeef];
-    const opsPerSeed = 4_000; // Keep total runtime reasonable
-    const maxPositions = 2_000;
+    const opsPerSeed = 4000;
+    const maxPositions = 2500;
 
     for (const seed of seeds) {
-      const rng = makePRNG(seed);
-      const clients = [new Fugue("client1"), new Fugue("client2"), new Fugue("client3")];
+      const opRng = makePRNG(seed);
+      const clients = [
+        new Fugue({ randomBytes: makeDeterministicRandomBytes(seed ^ 0x11) }),
+        new Fugue({ randomBytes: makeDeterministicRandomBytes(seed ^ 0x22) }),
+        new Fugue({ randomBytes: makeDeterministicRandomBytes(seed ^ 0x33) }),
+      ];
+
       const positions: string[] = [];
+      const unique = new Set<string>();
 
-      const insertPosition = (pos: string) => {
-        let insertIndex = 0;
-        while (insertIndex < positions.length && positions[insertIndex]! < pos) insertIndex++;
-        positions.splice(insertIndex, 0, pos);
+      const insert = (value: string) => {
+        expect(isFuguePosition(value)).toBe(true);
+        expect(value > Fugue.FIRST).toBe(true);
+        expect(value < Fugue.LAST).toBe(true);
+        expect(unique.has(value)).toBe(false);
+
+        sortedInsert(positions, value);
+        unique.add(value);
       };
 
-      const verifyOrdering = () => {
-        for (let i = 0; i < positions.length - 1; i++) {
-          expect(positions[i]! < positions[i + 1]!).toBe(true);
-        }
-      };
-
-      const verifyBounds = () => {
-        for (const p of positions) {
-          expect(p > Fugue.FIRST).toBe(true);
-          expect(p < Fugue.LAST).toBe(true);
-        }
-      };
-
-      const verifyUnique = () => {
-        const set = new Set(positions);
-        expect(set.size).toBe(positions.length);
-      };
-
-      // Initialize with a few positions from different clients
-      for (const f of clients) {
-        const a = f.first();
-        insertPosition(a);
-        insertPosition(f.after(a));
-        insertPosition(f.before(a));
+      for (const client of clients) {
+        const base = client.first();
+        insert(base);
+        insert(client.after(base));
+        insert(client.before(base));
       }
 
-      positions.sort();
-
       for (let i = 0; i < opsPerSeed; i++) {
-        const f = rng.pick(clients);
-        const op = rng.nextInt(8);
+        const client = opRng.pick(clients);
+        const op = opRng.nextInt(5);
+
         try {
-          let newPos: string | null = null;
           switch (op) {
-            case 0: { // Insert between two random positions
-              if (positions.length >= 2) {
-                const i1 = rng.nextInt(positions.length);
-                const i2 = rng.nextInt(positions.length);
-                if (i1 !== i2) {
-                  const left = positions[Math.min(i1, i2)]!;
-                  const right = positions[Math.max(i1, i2)]!;
-                  newPos = f.between(left, right);
-                  expect(newPos > left).toBe(true);
-                  expect(newPos < right).toBe(true);
+            case 0: {
+              if (positions.length < 2) {
+                break;
+              }
+
+              const index = opRng.nextInt(positions.length - 1);
+              const left = positions[index]!;
+              const right = positions[index + 1]!;
+              const inserted = client.between(left, right);
+
+              expect(left < inserted).toBe(true);
+              expect(inserted < right).toBe(true);
+              insert(inserted);
+              break;
+            }
+
+            case 1: {
+              const first = positions[0]!;
+              const inserted = client.before(first);
+
+              expect(inserted < first).toBe(true);
+              insert(inserted);
+              break;
+            }
+
+            case 2: {
+              const last = positions[positions.length - 1]!;
+              const inserted = client.after(last);
+
+              expect(last < inserted).toBe(true);
+              insert(inserted);
+              break;
+            }
+
+            case 3: {
+              const last = positions[positions.length - 1]!;
+              try {
+                const run = client.startRun(last, null);
+
+                const k1 = run.first;
+                const k2 = run.append();
+                const k3 = run.append();
+
+                expect(last < k1).toBe(true);
+                expect(k1 < k2).toBe(true);
+                expect(k2 < k3).toBe(true);
+
+                insert(k1);
+                insert(k2);
+                insert(k3);
+              } catch (error) {
+                if (!(error instanceof RunPrefixExhaustedError)) {
+                  throw error;
+                }
+
+                const inserted = client.after(last);
+                expect(last < inserted).toBe(true);
+                insert(inserted);
+              }
+              break;
+            }
+
+            case 4: {
+              if (positions.length < 2) {
+                break;
+              }
+
+              const leftIndex = opRng.nextInt(positions.length - 1);
+              const left = positions[leftIndex]!;
+              const right = positions[leftIndex + 1]!;
+
+              if (getRunPrefix(left) === getRunPrefix(right)) {
+                const inserted = client.between(left, right);
+                expect(left < inserted).toBe(true);
+                expect(inserted < right).toBe(true);
+                insert(inserted);
+              } else {
+                try {
+                  const run = client.startRun(left, right);
+                  const k1 = run.first;
+                  const k2 = run.append();
+
+                  expect(left < k1).toBe(true);
+                  expect(k1 < k2).toBe(true);
+                  expect(k2 < right).toBe(true);
+
+                  insert(k1);
+                  insert(k2);
+                } catch (error) {
+                  if (!(error instanceof RunPrefixExhaustedError)) {
+                    throw error;
+                  }
+
+                  const inserted = client.between(left, right);
+                  expect(left < inserted).toBe(true);
+                  expect(inserted < right).toBe(true);
+                  insert(inserted);
                 }
               }
               break;
             }
-            case 1: { // Insert after random
-              if (positions.length > 0) {
-                const ref = positions[rng.nextInt(positions.length)]!;
-                newPos = f.after(ref);
-                expect(newPos > ref).toBe(true);
-              }
-              break;
-            }
-            case 2: { // Insert before random
-              if (positions.length > 0) {
-                const ref = positions[rng.nextInt(positions.length)]!;
-                newPos = f.before(ref);
-                expect(newPos < ref).toBe(true);
-              }
-              break;
-            }
-            case 3: { // Insert at beginning
-              if (positions.length > 0) {
-                const first = positions[0]!;
-                newPos = f.between(null, first);
-                expect(newPos < first).toBe(true);
-              }
-              break;
-            }
-            case 4: { // Insert at end
-              if (positions.length > 0) {
-                const last = positions[positions.length - 1]!;
-                newPos = f.between(last, null);
-                expect(newPos > last).toBe(true);
-              }
-              break;
-            }
-            case 5: { // Insert between neighbors
-              if (positions.length >= 2) {
-                const idx = rng.nextInt(positions.length - 1);
-                const left = positions[idx]!;
-                const right = positions[idx + 1]!;
-                newPos = f.between(left, right);
-                expect(newPos > left).toBe(true);
-                expect(newPos < right).toBe(true);
-              }
-              break;
-            }
-            case 6: { // Invalid: swapped order (left >= right)
-              if (positions.length >= 2) {
-                const i1 = rng.nextInt(positions.length - 1);
-                const left = positions[i1 + 1]!;
-                const right = positions[i1]!;
-                // Should not throw; implementation adjusts inputs
-                newPos = f.between(left, right);
-                // Not asserting specific position, rely on global invariants afterwards
-              }
-              break;
-            }
-            case 7: { // Boundary: right > LAST
-              // Should clamp internally; result must be < Fugue.LAST
-              newPos = f.between(null, "~~~");
-              expect(newPos < Fugue.LAST).toBe(true);
-              break;
+          }
+        } catch (error) {
+          if (
+            !(error instanceof RunPrefixExhaustedError) &&
+            !(error instanceof SlotExhaustedError)
+          ) {
+            throw error;
+          }
+        }
+
+        if ((i & 63) === 63) {
+          verifySorted(positions);
+          expect(unique.size).toBe(positions.length);
+        }
+
+        if (positions.length > maxPositions) {
+          const removeCount = Math.floor(positions.length * 0.25);
+          for (let j = 0; j < removeCount; j++) {
+            const removeIndex = opRng.nextInt(positions.length);
+            const removed = positions.splice(removeIndex, 1)[0];
+            if (removed !== undefined) {
+              unique.delete(removed);
             }
           }
-
-          if (newPos !== null) insertPosition(newPos);
-
-          // Periodically verify invariants to keep cost reasonable
-          if ((i & 63) === 63) {
-            verifyOrdering();
-            verifyBounds();
-            verifyUnique();
-          }
-
-          // Control growth
-          if (positions.length > maxPositions) {
-            const toRemove = Math.floor(positions.length * 0.3);
-            for (let r = 0; r < toRemove; r++) {
-              positions.splice(rng.nextInt(positions.length), 1);
-            }
-          }
-        } catch (err) {
-          // Include seed in error context for reproducibility
-          console.error(`Seed ${seed} failed at op ${i} (type ${op})`);
-          throw err;
+          verifySorted(positions);
+          expect(unique.size).toBe(positions.length);
         }
       }
 
-      // Final verification per seed
-      verifyOrdering();
-      verifyBounds();
-      verifyUnique();
-    }
-  });
-
-  test("edge cases and boundary conditions", () => {
-    const fugue = new Fugue("client1");
-
-    // Test with FIRST and LAST constants
-    const firstPos = fugue.between(Fugue.FIRST, null);
-    const lastPos = fugue.between(null, Fugue.LAST);
-    const betweenFirstLast = fugue.between(Fugue.FIRST, Fugue.LAST);
-
-    expect(Fugue.FIRST < firstPos).toBe(true);
-    expect(lastPos < Fugue.LAST).toBe(true);
-    expect(Fugue.FIRST < betweenFirstLast).toBe(true);
-    expect(betweenFirstLast < Fugue.LAST).toBe(true);
-
-    // Test creating many positions in rapid succession
-    const rapidPositions: string[] = [];
-    const basePos = fugue.first();
-
-    for (let i = 0; i < 50; i++) {
-      rapidPositions.push(fugue.after(basePos));
-    }
-
-    // All should be greater than base and maintain order
-    for (const pos of rapidPositions) {
-      expect(pos > basePos).toBe(true);
-    }
-
-    // Test interleaving positions
-    let left = fugue.first();
-    let right = fugue.after(left);
-
-    for (let i = 0; i < 20; i++) {
-      const middle = fugue.between(left, right);
-      expect(left < middle).toBe(true);
-      expect(middle < right).toBe(true);
-
-      // Randomly choose which side to continue from
-      if (Math.random() < 0.5) {
-        right = middle;
-      } else {
-        left = middle;
-      }
+      verifySorted(positions);
+      expect(unique.size).toBe(positions.length);
     }
   });
 });
