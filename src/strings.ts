@@ -1,6 +1,3 @@
-const FIRST = "";
-const LAST = "~";
-
 export const DIGITS =
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 export const SEPARATOR = "!";
@@ -37,16 +34,11 @@ const defaultWarning = (message: string) => {
   console.warn(message);
 };
 
-declare const POSITION_BRAND: unique symbol;
-declare const RUN_PREFIX_BRAND: unique symbol;
+export type FuguePosition =
+  `${string}${typeof SEPARATOR}${string}${typeof SEPARATOR}${string}`;
 
-export type FuguePosition = string & {
-  readonly [POSITION_BRAND]: "FuguePosition";
-};
-
-export type FugueRunPrefix = string & {
-  readonly [RUN_PREFIX_BRAND]: "FugueRunPrefix";
-};
+export type FugueRunPrefix =
+  `${string}${typeof SEPARATOR}${string}${typeof SEPARATOR}${string}`;
 
 export type ParsedFuguePosition = Readonly<{
   anchor: bigint;
@@ -469,7 +461,7 @@ export function formatPosition(position: ParsedFuguePosition): FuguePosition {
     encodedSlotPath.push(encode62(subslot, SLOT_WIDTH));
   }
 
-  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}${encodedSlotPath.join(SEPARATOR)}` as FuguePosition;
+  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}${encodedSlotPath.join(SEPARATOR)}` as const;
 }
 
 export function parseRunPrefix(prefix: string): ParsedFugueRunPrefix {
@@ -502,7 +494,7 @@ export function formatRunPrefix(anchor: bigint, runId: bigint): FugueRunPrefix {
   assertRange(anchor, ANCHOR_MIN, ANCHOR_MAX, "anchor");
   assertRange(runId, RUN_MIN, RUN_MAX, "runId");
 
-  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}` as FugueRunPrefix;
+  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}` as const;
 }
 
 export function getRunPrefix(position: string): FugueRunPrefix {
@@ -541,10 +533,10 @@ export class FugueRun {
     this.maxSlot = initialSlot;
   }
 
-  append(): FuguePosition {
+  after(): FuguePosition {
     if (this.maxSlot > SLOT_MAX - this.slotStep) {
       throw new SlotExhaustedError(
-        `Cannot append within run ${this.prefix}: slot exceeds ${SLOT_MAX}`,
+        `Cannot allocate after within run ${this.prefix}: slot exceeds ${SLOT_MAX}`,
       );
     }
 
@@ -556,10 +548,10 @@ export class FugueRun {
     });
   }
 
-  prepend(): FuguePosition {
+  before(): FuguePosition {
     if (this.minSlot < SLOT_MIN + this.slotStep) {
       throw new SlotExhaustedError(
-        `Cannot prepend within run ${this.prefix}: slot goes below ${SLOT_MIN}`,
+        `Cannot allocate before within run ${this.prefix}: slot goes below ${SLOT_MIN}`,
       );
     }
 
@@ -573,9 +565,6 @@ export class FugueRun {
 }
 
 export class Fugue {
-  static readonly FIRST = FIRST;
-  static readonly LAST = LAST;
-
   private readonly randomBytes: FugueRandomBytes;
   private readonly allowInsecureRandom: boolean;
   private readonly onWarning: (message: string) => void;
@@ -697,8 +686,8 @@ export class Fugue {
     left: string | null,
     right: string | null,
   ): [ParsedFuguePosition | null, ParsedFuguePosition | null] {
-    const parsedLeft = this.parseBound(left, "left");
-    const parsedRight = this.parseBound(right, "right");
+    const parsedLeft = this.parseBound(left);
+    const parsedRight = this.parseBound(right);
 
     if (
       parsedLeft !== null &&
@@ -713,28 +702,9 @@ export class Fugue {
     return [parsedLeft, parsedRight];
   }
 
-  private parseBound(
-    value: string | null,
-    side: "left" | "right",
-  ): ParsedFuguePosition | null {
+  private parseBound(value: string | null): ParsedFuguePosition | null {
     if (value === null) {
       return null;
-    }
-
-    if (side === "left" && value === Fugue.FIRST) {
-      return null;
-    }
-
-    if (side === "right" && value === Fugue.LAST) {
-      return null;
-    }
-
-    if (side === "left" && value === Fugue.LAST) {
-      throw new InvalidPositionError(`left cannot be LAST (${Fugue.LAST})`);
-    }
-
-    if (side === "right" && value === Fugue.FIRST) {
-      throw new InvalidPositionError(`right cannot be FIRST (${Fugue.FIRST})`);
     }
 
     return parsePosition(value);

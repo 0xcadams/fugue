@@ -200,11 +200,9 @@ describe("fugue", () => {
     const middle = fugue.between(first, second);
     const beforeFirst = fugue.before(first);
 
-    expect(Fugue.FIRST < beforeFirst).toBe(true);
     expect(beforeFirst < first).toBe(true);
     expect(first < middle).toBe(true);
     expect(middle < second).toBe(true);
-    expect(second < Fugue.LAST).toBe(true);
 
     expect(first).toMatchInlineSnapshot(
       `"AzL8n0Y58m7!0DHgRSMYf32zxWYdj!AzL8n0Y58m8"`,
@@ -300,23 +298,23 @@ describe("fugue", () => {
 
     const keys = [
       { key: runA.first, label: "A" },
-      { key: runA.append(), label: "A" },
-      { key: runA.append(), label: "A" },
+      { key: runA.after(), label: "A" },
+      { key: runA.after(), label: "A" },
       { key: runB.first, label: "B" },
-      { key: runB.append(), label: "B" },
-      { key: runB.append(), label: "B" },
+      { key: runB.after(), label: "B" },
+      { key: runB.after(), label: "B" },
     ].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
     const labels = keys.map((entry) => entry.label);
     expect(hasSingleRunTransition(labels)).toBe(true);
   });
 
-  test("run append/prepend keep shared prefix", () => {
+  test("run after/before keep shared prefix", () => {
     const run = new FugueRun(222n, 333n, 10n);
 
     const first = run.first;
-    const next = run.append();
-    const prev = run.prepend();
+    const next = run.after();
+    const prev = run.before();
 
     expect(getRunPrefix(first)).toBe(getRunPrefix(next));
     expect(getRunPrefix(first)).toBe(getRunPrefix(prev));
@@ -393,26 +391,26 @@ describe("fugue", () => {
     expect(() => new FugueRun(1n, 1n, 0n)).toThrow(RangeError);
   });
 
-  test("run append/prepend exhaustion paths", () => {
+  test("run after/before exhaustion paths", () => {
     const appendRun = new FugueRun(1n, 1n, SLOT_MAX, SLOT_MAX);
-    expect(() => appendRun.append()).toThrow(SlotExhaustedError);
+    expect(() => appendRun.after()).toThrow(SlotExhaustedError);
 
     const prependRun = new FugueRun(1n, 1n, SLOT_MAX, 0n);
-    expect(() => prependRun.prepend()).toThrow(SlotExhaustedError);
+    expect(() => prependRun.before()).toThrow(SlotExhaustedError);
   });
 
-  test("between validates bound ordering and special sentinels", () => {
+  test("between validates bound ordering and null bounds", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(9) });
 
     const first = fugue.first();
     const second = fugue.after(first);
 
     expect(() => fugue.between(second, first)).toThrow(RangeError);
-    expect(() => fugue.between(Fugue.LAST, null)).toThrow();
-    expect(() => fugue.between(null, Fugue.FIRST)).toThrow();
+    expect(() => fugue.between("~", null)).toThrow();
+    expect(() => fugue.between(null, "")).toThrow();
 
-    const inBounds = fugue.between(Fugue.FIRST, Fugue.LAST);
-    expect(inBounds > Fugue.FIRST && inBounds < Fugue.LAST).toBe(true);
+    const inBounds = fugue.between(null, null);
+    expect(isFuguePosition(inBounds)).toBe(true);
   });
 
   test("between validates ordering across runId and slot-path forms", () => {

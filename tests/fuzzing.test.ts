@@ -82,8 +82,6 @@ describe("fuzzing", () => {
 
       const insert = (value: string) => {
         expect(isFuguePosition(value)).toBe(true);
-        expect(value > Fugue.FIRST).toBe(true);
-        expect(value < Fugue.LAST).toBe(true);
         expect(unique.has(value)).toBe(false);
 
         sortedInsert(positions, value);
@@ -143,8 +141,8 @@ describe("fuzzing", () => {
                 const run = client.startRun(last, null);
 
                 const k1 = run.first;
-                const k2 = run.append();
-                const k3 = run.append();
+                const k2 = run.after();
+                const k3 = run.after();
 
                 expect(last < k1).toBe(true);
                 expect(k1 < k2).toBe(true);
@@ -183,7 +181,7 @@ describe("fuzzing", () => {
                 try {
                   const run = client.startRun(left, right);
                   const k1 = run.first;
-                  const k2 = run.append();
+                  const k2 = run.after();
 
                   expect(left < k1).toBe(true);
                   expect(k1 < k2).toBe(true);

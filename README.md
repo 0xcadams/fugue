@@ -23,6 +23,8 @@ If your app has ordered items (cards, rows, comments, blocks), you usually hit t
 ## Installation
 
 ```bash
+bun add fugue
+# or
 npm install fugue
 # or
 pnpm add fugue
@@ -51,9 +53,7 @@ console.log(first < middle && middle < second);
 - `between(left, null)` -> after last item
 - `between(left, right)` -> between two items
 
-`Fugue.FIRST` (`""`) and `Fugue.LAST` (`"~"`) are sentinel bounds.
-
-## Position format (toy primer)
+## How it works
 
 Positions are opaque strings with this shape:
 
@@ -64,9 +64,9 @@ Real `fugue` keys are fixed-width base62 fields.
 
 Use this mental model only: sort positions as plain strings, ascending.
 
-## Common operations
+### Common operations
 
-### Insert at top or bottom
+#### Insert at top or bottom
 
 ```ts
 // Example toy positions:
@@ -81,7 +81,7 @@ const bottom = fugue.between(currentLast.position, null);
 // bottom = "0D!p9T2Lm!50"
 ```
 
-### Insert between two neighbors
+#### Insert between two neighbors
 
 ```ts
 // Example toy neighbors:
@@ -94,7 +94,7 @@ const middle = fugue.between(left.position, right.position);
 // middle = "07!n4Kp2x!50"
 ```
 
-### Move an item to a new location
+#### Move an item to a new location
 
 ```ts
 // Example toy target gap:
@@ -108,7 +108,7 @@ const newPosition = fugue.between(newLeft.position, newRight.position);
 // newPosition = "07!a8BdE2!50"
 ```
 
-### Insert a burst contiguously (typing/paste)
+#### Insert a burst contiguously (typing/paste)
 
 ```ts
 // Example toy bounds around insertion gap:
@@ -118,8 +118,8 @@ const newPosition = fugue.between(newLeft.position, newRight.position);
 const run = fugue.startRun(left.position, right.position);
 
 const p1 = run.first;
-const p2 = run.append();
-const p3 = run.append();
+const p2 = run.after();
+const p3 = run.after();
 
 // Example output (toy):
 // p1 = "07!n4Kp2x!50"
@@ -128,13 +128,48 @@ const p3 = run.append();
 ```
 
 Use `between(...)` for single inserts.
-Use `startRun(...)` + `append/prepend` for bursts.
+Use `startRun(...)` + `after/before` for bursts.
 
-## Toy example (problem -> concept -> solution)
+#### Run lifecycle in text editors
 
-This section is intentionally simplified for intuition.
+In collaborative editing, treat one run as one continuous typing/paste burst.
 
-### 1) Problem: insert between two existing items without rewriting old keys
+Keep using the current run while inserts are continuing in the same cursor gap.
+Start a new run when any of these happens:
+
+- cursor/selection moved (click/tap, arrow/home/end, selection jump, undo/redo relocation)
+- observed insertion bounds changed (different left/right neighbors, including remote edits once applied locally)
+
+```ts
+// assumes: const fugue = new Fugue();
+let activeRun: { first: string; after(): string } | null = null;
+let usedFirst = false;
+let lastLeft: string | null = null;
+let lastRight: string | null = null;
+
+function nextPosition(
+  left: string | null,
+  right: string | null,
+  cursorMoved: boolean,
+) {
+  const boundsChanged = left !== lastLeft || right !== lastRight;
+
+  if (activeRun === null || cursorMoved || boundsChanged) {
+    activeRun = fugue.startRun(left, right);
+    usedFirst = false;
+  }
+
+  const position = usedFirst ? activeRun.after() : activeRun.first;
+  usedFirst = true;
+  lastLeft = left;
+  lastRight = right;
+  return position;
+}
+```
+
+### Common problems
+
+#### Problem: insert between two existing items without rewriting old keys
 
 Existing items:
 
@@ -153,11 +188,11 @@ Output:
 
 `07!n4Kp2x!50`
 
-### 2) Problem: keep burst inserts grouped
+#### Problem: keep burst inserts grouped
 
 Concept: one burst shares one `<anchor>!<runId>!` prefix.
 
-Solution: append within the same run.
+Solution: call `run.after()` repeatedly within the same run.
 
 Output:
 
@@ -167,7 +202,7 @@ Output:
 07!n4Kp2x!70
 ```
 
-### 3) Problem: concurrent bursts in the same gap should not braid item-by-item
+#### Problem: concurrent bursts in the same gap should not braid item-by-item
 
 Concept: each burst gets a different `runId`.
 
@@ -184,7 +219,7 @@ Output:
 07!n4Kp2x!70
 ```
 
-### 4) Problem: insert between adjacent keys in the same run
+#### Problem: insert between adjacent keys in the same run
 
 Concept: if slot gap exists, midpoint works; if adjacent, use escape-hatch subslot.
 
@@ -228,6 +263,10 @@ Optional insecure fallback:
 const fugue = new Fugue({ allowInsecureRandom: true });
 ```
 
+## Deep dive
+
+For full algorithm details and edge-case behavior, see [`algorithm.md`](./algorithm.md).
+
 ## v3 migration notes
 
 Version 3 is a major algorithm update.
@@ -235,11 +274,7 @@ Version 3 is a major algorithm update.
 - v2 keys are not compatible with v3 parsing/generation
 - client IDs are no longer encoded in keys
 - `new Fugue(clientID)` is accepted for transition, but `clientID` is ignored
-- for burst semantics, use `startRun(...)` + `append/prepend`
-
-## Deep dive
-
-For full algorithm details and edge-case behavior, see [`algorithm.md`](./algorithm.md).
+- for burst semantics, use `startRun(...)` + `after/before`
 
 ## License
 

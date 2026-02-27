@@ -16,9 +16,9 @@ describe("benchmarks", () => {
     const right = fugue.after(left);
     const run = fugue.startRun(left, right);
 
-    run.append();
-    run.append();
-    run.prepend();
+    run.after();
+    run.after();
+    run.before();
   });
 
   bench("multiple instances", () => {

@@ -58,7 +58,7 @@ Only slot components change inside a run. This is the anti-braiding property: ea
 - `SLOT_MIN = 0`
 - `SLOT_MAX = 2^64 - 1`
 - `SLOT_MID = 2^63`
-- `SLOT_STEP = 2^48` (default append/prepend stride)
+- `SLOT_STEP = 2^48` (default `run.after()`/`run.before()` stride)
 
 ## Operations
 
@@ -85,12 +85,12 @@ Algorithm:
 5. Set first slot component to `SLOT_MID`.
 6. Emit key in normal form.
 
-### 2) Append/prepend within one run
+### 2) `run.after()`/`run.before()` within one run
 
 Given run prefix `(anchor, runId)`:
 
-- append: `slot = lastSlot + SLOT_STEP`
-- prepend: `slot = firstSlot - SLOT_STEP`
+- `run.after()`: `slot = lastSlot + SLOT_STEP`
+- `run.before()`: `slot = firstSlot - SLOT_STEP`
 
 When this stays within `[SLOT_MIN, SLOT_MAX]`, emit normal-form keys.
 
@@ -122,10 +122,10 @@ This can recurse to arbitrary depth without rewriting existing keys.
 
 ### 4) Run escape hatch (long-burst edge exhaustion)
 
-If append/prepend reaches slot-range ends for a run, continue the burst in a new adjacent run instead of rewriting old keys.
+If `run.after()`/`run.before()` reaches slot-range ends for a run, continue the burst in a new adjacent run instead of rewriting old keys.
 
-- append-side exhaustion: start a new run immediately after the exhausted run.
-- prepend-side exhaustion: start a new run immediately before the exhausted run.
+- `run.after()` exhaustion: start a new run immediately after the exhausted run.
+- `run.before()` exhaustion: start a new run immediately before the exhausted run.
 
 This is the run escape hatch. It may split one very long burst into multiple contiguous run blocks, while preserving correct sort order.
 
