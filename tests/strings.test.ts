@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   ANCHOR_WIDTH,
+  MAX_SUBSLOTS,
   RUN_WIDTH,
   SLOT_MAX,
   SLOT_MID,
@@ -31,6 +32,20 @@ function makeDeterministicRandomBytes(seed: number): FugueRandomBytes {
       state ^= state >>> 17;
       state ^= state << 5;
       out[i] = state & 0xff;
+    }
+    return out;
+  };
+}
+
+function makePatternRandomBytes(pattern: readonly number[]): FugueRandomBytes {
+  if (pattern.length === 0) {
+    throw new RangeError("pattern must not be empty");
+  }
+
+  return (byteLength: number) => {
+    const out = new Uint8Array(byteLength);
+    for (let i = 0; i < byteLength; i++) {
+      out[i] = pattern[i % pattern.length]!;
     }
     return out;
   };
@@ -189,6 +204,33 @@ describe("position parsing", () => {
       RangeError,
     );
   });
+
+  test("parsePosition rejects keys that exceed max subslot depth", () => {
+    const anchor = encode62(1n, ANCHOR_WIDTH);
+    const runId = encode62(2n, RUN_WIDTH);
+    const slot = encode62(3n, SLOT_WIDTH);
+    const extraSubslot = Array.from({ length: MAX_SUBSLOTS + 1 }, () =>
+      encode62(0n, SLOT_WIDTH),
+    ).join("!");
+
+    const tooDeep = `${anchor}!${runId}!${slot}!${extraSubslot}`;
+
+    expect(isFuguePosition(tooDeep)).toBe(false);
+    expect(() => parsePosition(tooDeep)).toThrow();
+  });
+
+  test("formatPosition rejects subslot arrays above max depth", () => {
+    const subslots = Array.from({ length: MAX_SUBSLOTS + 1 }, () => 0n);
+
+    expect(() =>
+      formatPosition({
+        anchor: 1n,
+        runId: 2n,
+        slot: 3n,
+        subslots,
+      }),
+    ).toThrow(RangeError);
+  });
 });
 
 describe("fugue", () => {
@@ -218,7 +260,7 @@ describe("fugue", () => {
     );
   });
 
-  test("between in same run uses slot midpoint", () => {
+  test("between in same run picks a randomized slot inside the gap", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(2) });
 
     const left = formatPosition({ anchor: 50n, runId: 99n, slot: 1000n });
@@ -228,7 +270,39 @@ describe("fugue", () => {
     const parsed = parsePosition(middle);
     expect(parsed.anchor).toBe(50n);
     expect(parsed.runId).toBe(99n);
-    expect(parsed.slot).toBe(1500n);
+    expect(parsed.slot > 1000n).toBe(true);
+    expect(parsed.slot < 2000n).toBe(true);
+    expect(parsed.subslots).toBeUndefined();
+  });
+
+  test("same-run inserts with identical bounds vary by RNG stream", () => {
+    const left = formatPosition({ anchor: 50n, runId: 99n, slot: 1000n });
+    const right = formatPosition({ anchor: 50n, runId: 99n, slot: 2000n });
+
+    const a = new Fugue({ randomBytes: makePatternRandomBytes([0, 0]) });
+    const b = new Fugue({ randomBytes: makePatternRandomBytes([0, 1]) });
+
+    const insertedA = a.between(left, right);
+    const insertedB = b.between(left, right);
+
+    expect(left < insertedA && insertedA < right).toBe(true);
+    expect(left < insertedB && insertedB < right).toBe(true);
+    expect(insertedA === insertedB).toBe(false);
+  });
+
+  test("same-run adjacent inserts with identical bounds vary by RNG stream", () => {
+    const left = formatPosition({ anchor: 1n, runId: 1n, slot: 10n });
+    const right = formatPosition({ anchor: 1n, runId: 1n, slot: 11n });
+
+    const a = new Fugue({ randomBytes: makePatternRandomBytes([0]) });
+    const b = new Fugue({ randomBytes: makePatternRandomBytes([1]) });
+
+    const insertedA = a.between(left, right);
+    const insertedB = b.between(left, right);
+
+    expect(left < insertedA && insertedA < right).toBe(true);
+    expect(left < insertedB && insertedB < right).toBe(true);
+    expect(insertedA === insertedB).toBe(false);
   });
 
   test("same-run adjacent slots use escape-hatch subslot", () => {
@@ -245,7 +319,8 @@ describe("fugue", () => {
     expect(parsed.anchor).toBe(1n);
     expect(parsed.runId).toBe(1n);
     expect(parsed.slot).toBe(10n);
-    expect(parsed.subslots).toEqual([SLOT_MID]);
+    expect(parsed.subslots?.length).toBe(1);
+    expect(parsed.subslots?.[0] !== undefined).toBe(true);
   });
 
   test("same-run escape-hatch can recurse deeper", () => {
@@ -270,7 +345,9 @@ describe("fugue", () => {
 
     const parsed = parsePosition(inserted);
     expect(parsed.slot).toBe(10n);
-    expect(parsed.subslots).toEqual([50n, SLOT_MID]);
+    expect(parsed.subslots?.[0]).toBe(50n);
+    expect(parsed.subslots?.length).toBe(2);
+    expect(parsed.subslots?.[1] !== undefined).toBe(true);
   });
 
   test("same-run prefix-vs-zero-descendant can be truly exhausted", () => {
@@ -448,6 +525,22 @@ describe("fugue", () => {
     expect(parsePosition(inserted).runId).toBe(2n);
   });
 
+  test("adjacent anchors use whichever side has runId space", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(110) });
+    const runMax = (1n << 96n) - 1n;
+
+    const left = formatPosition({ anchor: 10n, runId: runMax, slot: 100n });
+    const right = formatPosition({ anchor: 11n, runId: 1n, slot: 200n });
+
+    const inserted = fugue.between(left, right);
+    const parsed = parsePosition(inserted);
+
+    expect(left < inserted).toBe(true);
+    expect(inserted < right).toBe(true);
+    expect(parsed.anchor).toBe(11n);
+    expect(parsed.runId).toBe(0n);
+  });
+
   test("run-prefix exhaustion paths", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(11) });
     const anchorMax = (1n << 64n) - 1n;
@@ -474,12 +567,7 @@ describe("fugue", () => {
     });
     const afterLeftBoundary = fugue.between(leftBoundaryExhausted, null);
     expect(leftBoundaryExhausted < afterLeftBoundary).toBe(true);
-    expect(parsePosition(afterLeftBoundary)).toEqual({
-      anchor: anchorMax - 1n,
-      runId: runMax,
-      slot: SLOT_MAX,
-      subslots: [SLOT_MID],
-    });
+    expect(parsePosition(afterLeftBoundary).anchor).toBe(anchorMax);
 
     const rightBoundaryExhausted = formatPosition({
       anchor: 0n,
@@ -498,11 +586,8 @@ describe("fugue", () => {
     });
     const beforeTail = fugue.between(null, rightBoundaryWithTail);
     expect(beforeTail < rightBoundaryWithTail).toBe(true);
-    expect(parsePosition(beforeTail)).toEqual({
-      anchor: 0n,
-      runId: 1n,
-      slot: 0n,
-    });
+    expect(parsePosition(beforeTail).anchor).toBe(0n);
+    expect(parsePosition(beforeTail).runId).toBe(1n);
 
     const leftBoundaryWithTail = formatPosition({
       anchor: anchorMax - 1n,
@@ -525,12 +610,15 @@ describe("fugue", () => {
       subslots: [5n],
     });
     const betweenPositive = fugue.between(leftPrefix, rightWithPositive);
-    expect(parsePosition(betweenPositive)).toEqual({
-      anchor: 3n,
-      runId: 4n,
-      slot: 10n,
-      subslots: [2n],
-    });
+    expect(leftPrefix < betweenPositive).toBe(true);
+    expect(betweenPositive < rightWithPositive).toBe(true);
+    const parsedPositive = parsePosition(betweenPositive);
+    expect(parsedPositive.anchor).toBe(3n);
+    expect(parsedPositive.runId).toBe(4n);
+    expect(parsedPositive.slot).toBe(10n);
+    expect(parsedPositive.subslots?.length).toBe(1);
+    expect(parsedPositive.subslots?.[0] !== undefined).toBe(true);
+    expect(parsedPositive.subslots?.[0]! < 5n).toBe(true);
 
     const rightWithZeroTail = formatPosition({
       anchor: 3n,
@@ -539,12 +627,13 @@ describe("fugue", () => {
       subslots: [0n, 5n],
     });
     const betweenZeroTail = fugue.between(leftPrefix, rightWithZeroTail);
-    expect(parsePosition(betweenZeroTail)).toEqual({
-      anchor: 3n,
-      runId: 4n,
-      slot: 10n,
-      subslots: [0n],
-    });
+    expect(leftPrefix < betweenZeroTail).toBe(true);
+    expect(betweenZeroTail < rightWithZeroTail).toBe(true);
+    const parsedZeroTail = parsePosition(betweenZeroTail);
+    expect(parsedZeroTail.anchor).toBe(3n);
+    expect(parsedZeroTail.runId).toBe(4n);
+    expect(parsedZeroTail.slot).toBe(10n);
+    expect(parsedZeroTail.subslots?.[0]).toBe(0n);
 
     const leftWithTail = formatPosition({
       anchor: 3n,
@@ -568,22 +657,74 @@ describe("fugue", () => {
     expect(betweenMaxTailAndNext < rightNextSlot).toBe(true);
   });
 
+  test("prepend on deep zero-prefixed slot paths stays stable", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(17) });
+
+    const right = formatPosition({
+      anchor: 0n,
+      runId: 1n,
+      slot: 0n,
+      subslots: [...Array(MAX_SUBSLOTS - 1).fill(0n), 7n],
+    });
+
+    const inserted = fugue.between(null, right);
+
+    expect(inserted < right).toBe(true);
+    expect(parsePosition(inserted).anchor).toBe(0n);
+    expect(parsePosition(inserted).runId).toBe(1n);
+  });
+
   test("boundary fallback appends/prepends inside existing run", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(12) });
     const anchorMax = (1n << 64n) - 1n;
     const runMax = (1n << 96n) - 1n;
 
     const left = formatPosition({
-      anchor: anchorMax - 1n,
-      runId: runMax,
+      anchor: anchorMax,
+      runId: runMax - 1n,
       slot: SLOT_MAX - 2n,
     });
     const appended = fugue.between(left, null);
-    expect(parsePosition(appended).slot).toBe(SLOT_MAX);
+    expect(left < appended).toBe(true);
+    const parsedAppended = parsePosition(appended);
+    expect(parsedAppended.anchor).toBe(anchorMax);
+    expect(parsedAppended.runId).toBe(runMax - 1n);
+    expect(parsedAppended.slot > SLOT_MAX - 2n).toBe(true);
 
     const right = formatPosition({ anchor: 0n, runId: 1n, slot: 2n });
     const prepended = fugue.between(null, right);
-    expect(parsePosition(prepended).slot).toBe(0n);
+    expect(prepended < right).toBe(true);
+    const parsedPrepended = parsePosition(prepended);
+    expect(parsedPrepended.anchor).toBe(0n);
+    expect(parsedPrepended.runId).toBe(1n);
+    expect(parsedPrepended.slot < 2n).toBe(true);
+  });
+
+  test("boundary fallback varies across RNG streams", () => {
+    const anchorMax = (1n << 64n) - 1n;
+    const runMax = (1n << 96n) - 1n;
+
+    const left = formatPosition({
+      anchor: anchorMax,
+      runId: runMax - 1n,
+      slot: SLOT_MAX - 2n,
+    });
+    const right = formatPosition({ anchor: 0n, runId: 1n, slot: 2n });
+
+    const a = new Fugue({ randomBytes: makePatternRandomBytes([0]) });
+    const b = new Fugue({ randomBytes: makePatternRandomBytes([1]) });
+
+    const appendedA = a.between(left, null);
+    const appendedB = b.between(left, null);
+    expect(left < appendedA).toBe(true);
+    expect(left < appendedB).toBe(true);
+    expect(appendedA === appendedB).toBe(false);
+
+    const prependedA = a.between(null, right);
+    const prependedB = b.between(null, right);
+    expect(prependedA < right).toBe(true);
+    expect(prependedB < right).toBe(true);
+    expect(prependedA === prependedB).toBe(false);
   });
 
   test("random source validation and private error paths", () => {
@@ -596,6 +737,18 @@ describe("fugue", () => {
     expect(() => internals.randomBelow(0n)).toThrow(RangeError);
     expect(() => internals.randomBetween(5n, 4n)).toThrow(RangeError);
     expect(() => internals.defaultRandomBytes(0)).toThrow(RangeError);
+  });
+
+  test("randomBelow fails fast for pathological rejection patterns", () => {
+    const stuckRandom = new Fugue({
+      randomBytes: makePatternRandomBytes([0xff]),
+    });
+    const internals = stuckRandom as unknown as FugueInternals;
+
+    expect(() => internals.randomBelow(3n)).toThrow(RangeError);
+    expect(() => internals.randomBelow(3n)).toThrow(
+      /failed to produce a sample < 3 after/i,
+    );
   });
 
   test("default random bytes use crypto when available", () => {

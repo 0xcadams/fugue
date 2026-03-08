@@ -9,6 +9,7 @@ export const SLOT_BITS = 64;
 export const ANCHOR_WIDTH = 11;
 export const RUN_WIDTH = 17;
 export const SLOT_WIDTH = 11;
+export const MAX_SUBSLOTS = 64;
 
 export const SLOT_MIN = 0n;
 export const SLOT_MAX = (1n << BigInt(SLOT_BITS)) - 1n;
@@ -20,7 +21,12 @@ const ANCHOR_MAX = (1n << BigInt(ANCHOR_BITS)) - 1n;
 const RUN_MIN = 0n;
 const RUN_MAX = (1n << BigInt(RUN_BITS)) - 1n;
 const BASE62 = BigInt(DIGITS.length);
-const SLOT_UPPER_EXCLUSIVE = SLOT_MAX + 1n;
+const POSITION_COMPONENT_COUNT = 3;
+const MAX_POSITION_COMPONENT_COUNT = POSITION_COMPONENT_COUNT + MAX_SUBSLOTS;
+const MIN_POSITION_LENGTH = ANCHOR_WIDTH + RUN_WIDTH + SLOT_WIDTH + 2;
+const MAX_POSITION_LENGTH =
+  MIN_POSITION_LENGTH + MAX_SUBSLOTS * (SLOT_WIDTH + 1);
+const MAX_RANDOM_REJECTION_ATTEMPTS = 128;
 
 const DIGIT_TO_VALUE = new Map<string, number>();
 for (let i = 0; i < DIGITS.length; i++) {
@@ -34,11 +40,21 @@ const defaultWarning = (message: string) => {
   console.warn(message);
 };
 
-export type FuguePosition =
+type FuguePositionString =
   `${string}${typeof SEPARATOR}${string}${typeof SEPARATOR}${string}`;
+type FugueRunPrefixString =
+  `${string}${typeof SEPARATOR}${string}${typeof SEPARATOR}`;
 
-export type FugueRunPrefix =
-  `${string}${typeof SEPARATOR}${string}${typeof SEPARATOR}${string}`;
+declare const fuguePositionBrand: unique symbol;
+declare const fugueRunPrefixBrand: unique symbol;
+
+export type FuguePosition = FuguePositionString & {
+  readonly [fuguePositionBrand]: true;
+};
+
+export type FugueRunPrefix = FugueRunPrefixString & {
+  readonly [fugueRunPrefixBrand]: true;
+};
 
 export type ParsedFuguePosition = Readonly<{
   anchor: bigint;
@@ -190,94 +206,6 @@ function compareSlotPaths(left: readonly bigint[], right: readonly bigint[]) {
   return 0;
 }
 
-function slotPathBetween(
-  left: readonly bigint[],
-  right: readonly bigint[],
-): bigint[] | null {
-  const prefix: bigint[] = [];
-  let index = 0;
-
-  for (;;) {
-    const leftHasValue = index < left.length;
-    const rightHasValue = index < right.length;
-
-    if (!leftHasValue && !rightHasValue) {
-      prefix.push(SLOT_MID);
-      return prefix;
-    }
-
-    if (!leftHasValue) {
-      const rightValue = right[index]!;
-
-      if (rightValue > 0n) {
-        prefix.push(rightValue / 2n);
-        return prefix;
-      }
-
-      if (right[index + 1] !== undefined) {
-        prefix.push(0n);
-        return prefix;
-      }
-
-      return null;
-    }
-
-    if (!rightHasValue) {
-      const leftValue = left[index]!;
-
-      if (leftValue < SLOT_MAX) {
-        prefix.push((leftValue + SLOT_UPPER_EXCLUSIVE) / 2n);
-        return prefix;
-      }
-
-      prefix.push(SLOT_MAX);
-      index++;
-      continue;
-    }
-
-    const leftValue = left[index]!;
-    const rightValue = right[index]!;
-
-    if (leftValue === rightValue) {
-      prefix.push(leftValue);
-      index++;
-      continue;
-    }
-
-    const gap = rightValue - leftValue;
-    if (gap >= 2n) {
-      prefix.push((leftValue + rightValue) / 2n);
-      return prefix;
-    }
-
-    prefix.push(leftValue);
-    index++;
-  }
-}
-
-function slotPathAfter(left: readonly bigint[]) {
-  const prefix: bigint[] = [];
-  for (const value of left) {
-    if (value < SLOT_MAX) {
-      prefix.push((value + SLOT_UPPER_EXCLUSIVE) / 2n);
-      return prefix;
-    }
-
-    prefix.push(SLOT_MAX);
-  }
-
-  prefix.push(SLOT_MID);
-  return prefix;
-}
-
-function slotPathBefore(right: readonly bigint[]): bigint[] | null {
-  if (right.length > 1) {
-    return [0n];
-  }
-
-  return null;
-}
-
 function formatPositionFromSlotPath(
   anchor: bigint,
   runId: bigint,
@@ -341,8 +269,22 @@ function parseBase62FixedWidth(
 }
 
 function parsePositionInternal(value: string): ParsedFuguePosition | null {
+  if (
+    value.length < MIN_POSITION_LENGTH ||
+    value.length > MAX_POSITION_LENGTH
+  ) {
+    return null;
+  }
+
   const [anchorEncoded, runIdEncoded, slotEncoded, ...subslotEncoded] =
     value.split(SEPARATOR);
+
+  if (
+    subslotEncoded.length + POSITION_COMPONENT_COUNT >
+    MAX_POSITION_COMPONENT_COUNT
+  ) {
+    return null;
+  }
 
   if (
     anchorEncoded === undefined ||
@@ -451,6 +393,12 @@ export function formatPosition(position: ParsedFuguePosition): FuguePosition {
   const { anchor, runId, slot } = position;
   const subslots = position.subslots ?? [];
 
+  if (subslots.length > MAX_SUBSLOTS) {
+    throw new RangeError(
+      `subslots length must be <= ${MAX_SUBSLOTS}, got ${subslots.length}`,
+    );
+  }
+
   assertRange(anchor, ANCHOR_MIN, ANCHOR_MAX, "anchor");
   assertRange(runId, RUN_MIN, RUN_MAX, "runId");
   assertRange(slot, SLOT_MIN, SLOT_MAX, "slot");
@@ -461,10 +409,14 @@ export function formatPosition(position: ParsedFuguePosition): FuguePosition {
     encodedSlotPath.push(encode62(subslot, SLOT_WIDTH));
   }
 
-  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}${encodedSlotPath.join(SEPARATOR)}` as const;
+  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}${encodedSlotPath.join(SEPARATOR)}` as FuguePosition;
 }
 
 export function parseRunPrefix(prefix: string): ParsedFugueRunPrefix {
+  if (prefix.length !== ANCHOR_WIDTH + RUN_WIDTH + 2) {
+    throw new InvalidPositionError(`Invalid run prefix \"${prefix}\"`);
+  }
+
   if (!prefix.endsWith(SEPARATOR)) {
     throw new InvalidPositionError(
       `Invalid run prefix \"${prefix}\": missing trailing separator`,
@@ -494,7 +446,7 @@ export function formatRunPrefix(anchor: bigint, runId: bigint): FugueRunPrefix {
   assertRange(anchor, ANCHOR_MIN, ANCHOR_MAX, "anchor");
   assertRange(runId, RUN_MIN, RUN_MAX, "runId");
 
-  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}` as const;
+  return `${encode62(anchor, ANCHOR_WIDTH)}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}` as FugueRunPrefix;
 }
 
 export function getRunPrefix(position: string): FugueRunPrefix {
@@ -621,7 +573,7 @@ export class Fugue {
       parsedRight !== null &&
       isSameRun(parsedLeft, parsedRight)
     ) {
-      const slotPath = slotPathBetween(
+      const slotPath = this.slotPathBetween(
         getSlotPath(parsedLeft),
         getSlotPath(parsedRight),
       );
@@ -742,11 +694,63 @@ export class Fugue {
       );
     }
 
-    const anchor =
-      rightPrefix.anchor - leftPrefix.anchor >= 2n
-        ? (leftPrefix.anchor + rightPrefix.anchor) / 2n
-        : leftPrefix.anchor;
+    const anchorGap = rightPrefix.anchor - leftPrefix.anchor;
 
+    if (anchorGap >= 2n) {
+      const anchor = (leftPrefix.anchor + rightPrefix.anchor) / 2n;
+      return this.createRunAtAnchor(anchor, leftPrefix, rightPrefix);
+    }
+
+    if (anchorGap === 1n) {
+      const candidates = [
+        this.getRunIdCandidate(leftPrefix.anchor, leftPrefix, rightPrefix),
+        this.getRunIdCandidate(rightPrefix.anchor, leftPrefix, rightPrefix),
+      ].filter(
+        (
+          candidate,
+        ): candidate is {
+          anchor: bigint;
+          minRunId: bigint;
+          maxRunId: bigint;
+          span: bigint;
+        } => candidate !== null,
+      );
+
+      if (candidates.length === 0) {
+        throw new RunPrefixExhaustedError(
+          `No runId space available at anchors ${leftPrefix.anchor} and ${rightPrefix.anchor} between ${leftPrefix.runId} and ${rightPrefix.runId}`,
+        );
+      }
+
+      const candidate = this.pickRunIdCandidate(candidates);
+      const runId = this.randomBetween(candidate.minRunId, candidate.maxRunId);
+      return new FugueRun(candidate.anchor, runId, this.slotStep);
+    }
+
+    return this.createRunAtAnchor(leftPrefix.anchor, leftPrefix, rightPrefix);
+  }
+
+  private createRunAtAnchor(
+    anchor: bigint,
+    leftPrefix: ParsedFugueRunPrefix,
+    rightPrefix: ParsedFugueRunPrefix,
+  ) {
+    const bounds = this.getRunIdBoundsAtAnchor(anchor, leftPrefix, rightPrefix);
+    if (bounds === null) {
+      throw new RunPrefixExhaustedError(
+        `No runId space available at anchor ${anchor} between ${leftPrefix.runId} and ${rightPrefix.runId}`,
+      );
+    }
+
+    const runId = this.randomBetween(bounds.minRunId, bounds.maxRunId);
+    return new FugueRun(anchor, runId, this.slotStep);
+  }
+
+  private getRunIdBoundsAtAnchor(
+    anchor: bigint,
+    leftPrefix: ParsedFugueRunPrefix,
+    rightPrefix: ParsedFugueRunPrefix,
+  ) {
     let minRunId = RUN_MIN;
     let maxRunId = RUN_MAX;
 
@@ -759,13 +763,57 @@ export class Fugue {
     }
 
     if (minRunId > maxRunId) {
-      throw new RunPrefixExhaustedError(
-        `No runId space available at anchor ${anchor} between ${leftPrefix.runId} and ${rightPrefix.runId}`,
-      );
+      return null;
     }
 
-    const runId = this.randomBetween(minRunId, maxRunId);
-    return new FugueRun(anchor, runId, this.slotStep);
+    return { minRunId, maxRunId };
+  }
+
+  private getRunIdCandidate(
+    anchor: bigint,
+    leftPrefix: ParsedFugueRunPrefix,
+    rightPrefix: ParsedFugueRunPrefix,
+  ) {
+    const bounds = this.getRunIdBoundsAtAnchor(anchor, leftPrefix, rightPrefix);
+    if (bounds === null) {
+      return null;
+    }
+
+    return {
+      anchor,
+      minRunId: bounds.minRunId,
+      maxRunId: bounds.maxRunId,
+      span: bounds.maxRunId - bounds.minRunId + 1n,
+    };
+  }
+
+  private pickRunIdCandidate(
+    candidates: readonly {
+      anchor: bigint;
+      minRunId: bigint;
+      maxRunId: bigint;
+      span: bigint;
+    }[],
+  ) {
+    if (candidates.length === 1) {
+      return candidates[0]!;
+    }
+
+    let totalSpan = 0n;
+    for (const candidate of candidates) {
+      totalSpan += candidate.span;
+    }
+
+    let offset = this.randomBelow(totalSpan);
+    for (const candidate of candidates) {
+      if (offset < candidate.span) {
+        return candidate;
+      }
+
+      offset -= candidate.span;
+    }
+
+    return candidates[candidates.length - 1]!;
   }
 
   private randomBetween(minInclusive: bigint, maxInclusive: bigint) {
@@ -784,7 +832,8 @@ export class Fugue {
     const gap = SLOT_MAX - left.slot;
 
     if (gap > 0n) {
-      const delta = gap >= this.slotStep ? this.slotStep : gap;
+      const maxDelta = gap >= this.slotStep ? this.slotStep : gap;
+      const delta = this.randomBetween(1n, maxDelta);
       return formatPosition({
         anchor: left.anchor,
         runId: left.runId,
@@ -792,7 +841,7 @@ export class Fugue {
       });
     }
 
-    const slotPath = slotPathAfter(getSlotPath(left));
+    const slotPath = this.slotPathAfter(getSlotPath(left));
     return formatPositionFromSlotPath(left.anchor, left.runId, slotPath);
   }
 
@@ -800,7 +849,8 @@ export class Fugue {
     const gap = right.slot - SLOT_MIN;
 
     if (gap > 0n) {
-      const delta = gap >= this.slotStep ? this.slotStep : gap;
+      const maxDelta = gap >= this.slotStep ? this.slotStep : gap;
+      const delta = this.randomBetween(1n, maxDelta);
       return formatPosition({
         anchor: right.anchor,
         runId: right.runId,
@@ -808,7 +858,7 @@ export class Fugue {
       });
     }
 
-    const slotPath = slotPathBefore(getSlotPath(right));
+    const slotPath = this.slotPathBefore(getSlotPath(right));
     if (slotPath === null) {
       throw new SlotExhaustedError(
         `No slot space before ${formatPosition(right)} in run ${formatRunPrefix(right.anchor, right.runId)}`,
@@ -816,6 +866,129 @@ export class Fugue {
     }
 
     return formatPositionFromSlotPath(right.anchor, right.runId, slotPath);
+  }
+
+  private slotPathBetween(left: readonly bigint[], right: readonly bigint[]) {
+    const prefix: bigint[] = [];
+    let index = 0;
+
+    for (;;) {
+      const leftHasValue = index < left.length;
+      const rightHasValue = index < right.length;
+
+      if (!leftHasValue && !rightHasValue) {
+        prefix.push(this.randomBetween(SLOT_MIN, SLOT_MAX));
+        return prefix;
+      }
+
+      if (!leftHasValue) {
+        const rightValue = right[index]!;
+
+        if (rightValue > SLOT_MIN) {
+          prefix.push(this.randomBetween(SLOT_MIN, rightValue - 1n));
+          return prefix;
+        }
+
+        const tail = right.slice(index + 1);
+        if (tail.length === 0) {
+          return null;
+        }
+
+        const deeper = this.slotPathBefore(tail);
+        if (deeper !== null && this.randomBelow(2n) === 1n) {
+          prefix.push(SLOT_MIN, ...deeper);
+          return prefix;
+        }
+
+        prefix.push(SLOT_MIN);
+        return prefix;
+      }
+
+      if (!rightHasValue) {
+        const leftValue = left[index]!;
+
+        if (leftValue < SLOT_MAX) {
+          prefix.push(this.randomBetween(leftValue + 1n, SLOT_MAX));
+          return prefix;
+        }
+
+        prefix.push(SLOT_MAX);
+        index++;
+        continue;
+      }
+
+      const leftValue = left[index]!;
+      const rightValue = right[index]!;
+
+      if (leftValue === rightValue) {
+        prefix.push(leftValue);
+        index++;
+        continue;
+      }
+
+      const gap = rightValue - leftValue;
+      if (gap >= 2n) {
+        prefix.push(this.randomBetween(leftValue + 1n, rightValue - 1n));
+        return prefix;
+      }
+
+      prefix.push(leftValue);
+      index++;
+    }
+  }
+
+  private slotPathAfter(left: readonly bigint[]) {
+    const prefix: bigint[] = [];
+
+    for (const value of left) {
+      if (value < SLOT_MAX) {
+        prefix.push(this.randomBetween(value + 1n, SLOT_MAX));
+        return prefix;
+      }
+
+      prefix.push(SLOT_MAX);
+    }
+
+    prefix.push(this.randomBetween(SLOT_MIN, SLOT_MAX));
+    return prefix;
+  }
+
+  private slotPathBefore(right: readonly bigint[]): bigint[] | null {
+    if (right.length === 0) {
+      return null;
+    }
+
+    let index = 0;
+    while (index < right.length && right[index] === SLOT_MIN) {
+      index++;
+    }
+
+    let result: bigint[] | null;
+    let unwindLevels: number;
+
+    if (index === right.length) {
+      if (right.length === 1) {
+        return null;
+      }
+
+      result = null;
+      unwindLevels = right.length - 1;
+    } else {
+      const rightValue = right[index]!;
+      result = [this.randomBetween(SLOT_MIN, rightValue - 1n)];
+      unwindLevels = index;
+    }
+
+    for (let level = 0; level < unwindLevels; level++) {
+      const prefix = [SLOT_MIN];
+      if (result !== null && this.randomBelow(2n) === 1n) {
+        prefix.push(...result);
+      }
+
+      result = prefix;
+    }
+
+    return result;
   }
 
   private randomBelow(limit: bigint) {
@@ -832,7 +1005,7 @@ export class Fugue {
     const extraBits = byteLength * 8 - bits;
     const mask = 0xff >>> extraBits;
 
-    for (;;) {
+    for (let attempt = 0; attempt < MAX_RANDOM_REJECTION_ATTEMPTS; attempt++) {
       const bytes = this.randomBytes(byteLength);
       if (bytes.length !== byteLength) {
         throw new RangeError(
@@ -848,6 +1021,10 @@ export class Fugue {
         return value;
       }
     }
+
+    throw new RangeError(
+      `randomBytes failed to produce a sample < ${limit} after ${MAX_RANDOM_REJECTION_ATTEMPTS} attempts`,
+    );
   }
 
   private defaultRandomBytes(byteLength: number) {

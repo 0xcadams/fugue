@@ -59,6 +59,7 @@ Only slot components change inside a run. This is the anti-braiding property: ea
 - `SLOT_MAX = 2^64 - 1`
 - `SLOT_MID = 2^63`
 - `SLOT_STEP = 2^48` (default `run.after()`/`run.before()` stride)
+- `MAX_SUBSLOTS = 64` (maximum parsed/formatted escape-hatch depth)
 
 ## Operations
 
@@ -78,10 +79,12 @@ Algorithm:
    - right sentinel: `(2^64 - 1, 2^96 - 1)`
 3. Choose anchor:
    - if `aR - aL >= 2`, choose midpoint `a = floor((aL + aR) / 2)`
-   - otherwise pack under left anchor: `a = aL`
+   - if `aR - aL == 1`, evaluate both anchors and pick one that has a non-empty `runId` interval
+   - if `aR - aL == 0`, use that shared anchor
 4. Choose `runId` at that anchor so the run prefix is strictly between neighbors:
    - if `a == aL`, require `runId > runIdL`
    - if `a == aR`, require `runId < runIdR`
+   - choose randomly from the resulting valid interval
 5. Set first slot component to `SLOT_MID`.
 6. Emit key in normal form.
 
@@ -98,9 +101,10 @@ When this stays within `[SLOT_MIN, SLOT_MAX]`, emit normal-form keys.
 
 If both neighbors share `(anchor, runId)`, insert using slot components:
 
-1. Try midpoint at the current level.
-2. If numeric gap is at least `2`, use that midpoint and stop.
+1. Walk slot components left-to-right.
+2. At the first level with numeric gap `>= 2`, choose a random value in that open interval and stop.
 3. If gap is `1` (adjacent), reuse the left value at that level and descend one level (escape hatch).
+4. If one side ends at a level, continue with the same rule and randomize when a true interval exists.
 
 This creates a subslot key that still sorts strictly between neighbors.
 
@@ -118,22 +122,24 @@ If a subslot gap also becomes adjacent, repeat the same rule:
 
 `...!50!50 < ...!50!50!50 < ...!50!51`
 
-This can recurse to arbitrary depth without rewriting existing keys.
+This can recurse deeper when needed (up to `MAX_SUBSLOTS`) without rewriting existing keys.
 
-### 4) Run escape hatch (long-burst edge exhaustion)
+### 4) Run exhaustion handling (long-burst edge exhaustion)
 
-If `run.after()`/`run.before()` reaches slot-range ends for a run, continue the burst in a new adjacent run instead of rewriting old keys.
+`FugueRun.after()`/`FugueRun.before()` throw `SlotExhaustedError` when they hit slot-range limits.
 
-- `run.after()` exhaustion: start a new run immediately after the exhausted run.
-- `run.before()` exhaustion: start a new run immediately before the exhausted run.
+To continue a burst without rewriting existing keys, the caller starts a new adjacent run:
 
-This is the run escape hatch. It may split one very long burst into multiple contiguous run blocks, while preserving correct sort order.
+- after-side exhaustion: call `fugue.startRunAfter(lastKeyFromExhaustedRun)`
+- before-side exhaustion: call `fugue.startRunBefore(firstKeyFromExhaustedRun)`
+
+This is the run escape hatch at API level. It may split one very long burst into multiple contiguous run blocks, while preserving correct sort order.
 
 ## Exhaustion and Packing
 
 ### Slot-gap exhaustion (inside one run)
 
-Use the slot escape hatch (`subslot`, then deeper levels only if needed).
+Use the slot escape hatch (`subslot`, then deeper levels only if needed), with random choice whenever multiple valid values exist.
 
 ### Anchor exhaustion (between runs)
 
@@ -152,12 +158,15 @@ Result: new run block lands between those neighbors.
 
 - Random 96-bit `runId` collisions are negligible for practical scales.
 - If a generated `runId` does not satisfy required ordering bounds, generate another.
-- If no `runId` interval exists for the chosen anchor (`minRunId > maxRunId`), run-prefix space is exhausted at that location and key generation must fail explicitly.
+- If no `runId` interval exists for the chosen anchor (`minRunId > maxRunId`), fresh run-prefix allocation is exhausted at that location; `startRun(...)` must fail explicitly, and `between(...)` can only continue via documented edge fallback behavior.
 
 ## Collision Model
 
 Default random source is CSPRNG (`crypto.getRandomValues`).
 Custom RNG injection is supported for environments without Web Crypto.
+
+When multiple valid keys exist (runId ranges, same-run slot gaps, and boundary fallback allocation), Fugue samples one randomly.
+This keeps collisions probabilistic and negligible in practice, rather than deterministically repeating the same key.
 
 ## Complexity
 

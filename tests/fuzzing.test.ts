@@ -3,6 +3,7 @@ import {
   Fugue,
   RunPrefixExhaustedError,
   SlotExhaustedError,
+  formatPosition,
   getRunPrefix,
   isFuguePosition,
   type FugueRandomBytes,
@@ -64,6 +65,32 @@ function verifySorted(values: string[]) {
 }
 
 describe("fuzzing", () => {
+  test("repeated concurrent inserts into one gap stay ordered and unique", () => {
+    const left = formatPosition({ anchor: 10n, runId: 20n, slot: 100n });
+    const right = formatPosition({ anchor: 10n, runId: 20n, slot: 101n });
+    const clients = [
+      new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc001) }),
+      new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc002) }),
+      new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc003) }),
+      new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc004) }),
+    ];
+
+    const inserted: string[] = [];
+
+    for (let round = 0; round < 200; round++) {
+      for (const client of clients) {
+        const key = client.between(left, right);
+        expect(left < key).toBe(true);
+        expect(key < right).toBe(true);
+        inserted.push(key);
+      }
+    }
+
+    const sorted = [...inserted].sort();
+    verifySorted(sorted);
+    expect(new Set(inserted).size).toBe(inserted.length);
+  });
+
   test("mixed operations keep ordering and uniqueness", () => {
     const seeds = [0x1, 0x2a2a2a2a, 0x12345678, 0x7fffffff, 0xdeadbeef];
     const opsPerSeed = 4000;

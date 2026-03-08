@@ -130,6 +130,9 @@ const p3 = run.after();
 Use `between(...)` for single inserts.
 Use `startRun(...)` + `after/before` for bursts.
 
+If a long burst reaches slot-range limits, `run.after()`/`run.before()` throws `SlotExhaustedError`.
+Continue by starting an adjacent run (`fugue.startRunAfter(lastKey)` or `fugue.startRunBefore(firstKey)`).
+
 #### Run lifecycle in text editors
 
 In collaborative editing, treat one run as one continuous typing/paste burst.
@@ -221,7 +224,7 @@ Output:
 
 #### Problem: insert between adjacent keys in the same run
 
-Concept: if slot gap exists, midpoint works; if adjacent, use escape-hatch subslot.
+Concept: if slot gap exists, choose a random value inside the gap; if adjacent, use a randomized escape-hatch subslot.
 
 Example:
 
@@ -229,15 +232,15 @@ Example:
 ...!50 < ...!50!50 < ...!51
 ```
 
-This can recurse deeper when needed (`...!50!50!50`, etc.).
-If no representable space remains at that location, `fugue` throws an explicit exhaustion error.
+This can recurse deeper when needed (`...!50!50!50`, etc.), up to 64 subslot levels, and randomization is applied whenever multiple valid values exist.
+If no space remains for the applicable strategy at that location (same-run slot/subslot insertion or fresh run-prefix allocation), `fugue` throws an explicit exhaustion error.
 
 ## Guarantees and limits
 
 - keys are opaque strings; compare/sort as strings
 - key generation is typically O(1) and does not rewrite existing keys
 - run-based burst inserts remain contiguous sorted blocks
-- collisions are negligible with CSPRNG-based `runId` generation
+- collisions are probabilistic and negligible in practice with CSPRNG-based randomness (`runId`, same-run gaps, and fallback edge allocation)
 - extreme exhaustion cases are explicit errors (not silent corruption)
 
 ## Environment support
