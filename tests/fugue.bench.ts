@@ -1,6 +1,6 @@
 import { bench, describe } from "vitest";
-import { Fugue, formatPosition, type FuguePosition } from "../src";
-import { ANCHOR_MAX, SLOT_MAX } from "../src/position";
+import { Fugue, type FuguePosition } from "../src";
+import { ANCHOR_MAX, SLOT_MAX, formatPosition } from "../src/position";
 
 describe("benchmarks", () => {
   bench("single", () => {

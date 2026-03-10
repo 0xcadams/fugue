@@ -202,29 +202,18 @@ function nextPosition(
 }
 ```
 
-### Validate or parse stored values
+### Validate stored values
 
 If you load keys from a database or network boundary, validate them before passing them back into `Fugue`.
 
 ```ts
-import {
-  Fugue,
-  isFuguePosition,
-  isFugueRunPrefix,
-  tryParsePosition,
-  tryParseRunPrefix,
-} from "fugue";
+import { Fugue, isFuguePosition } from "fugue";
 
 const fugue = new Fugue();
 
 if (isFuguePosition(maybePosition)) {
   fugue.after(maybePosition);
 }
-
-const parsedPosition = tryParsePosition(maybePosition);
-const parsedPrefix = tryParseRunPrefix(maybePrefix);
-
-console.log(isFugueRunPrefix(maybePrefix), parsedPosition, parsedPrefix);
 ```
 
 ## Common problems
@@ -248,7 +237,7 @@ Output:
 
 ### Problem: keep burst inserts grouped
 
-One burst shares one `<anchorPath>!<runId>!` prefix.
+One burst shares one `<anchorPath>!<runId>` prefix.
 
 Solution: call `run.next()` repeatedly within the same run.
 

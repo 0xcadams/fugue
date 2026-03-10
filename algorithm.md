@@ -53,7 +53,7 @@ A run is one insertion burst (paste, uninterrupted typing, etc.).
 
 All items in one run share:
 
-`<anchorPath>!<runId>!`
+`<anchorPath>!<runId>`
 
 Only the `slotPath` changes inside a run.
 That is the anti-braiding property: each run is one contiguous sorted block.

@@ -9,8 +9,6 @@ export class InvalidBase62Error extends FugueError {}
 
 export class InvalidPositionError extends FugueError {}
 
-export class InvalidRunPrefixError extends FugueError {}
-
 export class InvalidBoundsError extends FugueError {}
 
 export class InvalidRandomSourceError extends FugueError {}

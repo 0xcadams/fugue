@@ -1,22 +1,11 @@
-import {
-  formatPosition,
-  formatRunPrefix,
-  type FuguePosition,
-  type FugueRunPrefix,
-} from "../src";
+import { Fugue, type FuguePosition } from "../src";
 
 declare function acceptPosition(value: FuguePosition): void;
-declare function acceptRunPrefix(value: FugueRunPrefix): void;
 
-const position = formatPosition({
-  anchorPath: [1n, 2n],
-  runId: 3n,
-  slotPath: [4n, 5n],
-});
-const prefix = formatRunPrefix({ anchorPath: [1n, 2n], runId: 3n });
+const fugue = new Fugue();
+const position = fugue.first();
 
 acceptPosition(position);
-acceptRunPrefix(prefix);
 
-// @ts-expect-error run prefixes are not positions
-acceptPosition(prefix);
+// @ts-expect-error missing separators
+acceptPosition("not-a-position");

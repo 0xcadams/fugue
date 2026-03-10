@@ -19,11 +19,9 @@ import {
   comparePaths,
   comparePositions,
   formatPosition,
-  formatRunPrefix,
   isSameRun,
   parsePosition,
   type FuguePosition,
-  type FugueRunPrefix,
   type ParsedFuguePosition,
 } from "./position";
 
@@ -62,6 +60,16 @@ function clonePath(path: readonly bigint[]) {
   return [...path];
 }
 
+function formatRunPrefix(anchorPath: readonly bigint[], runId: bigint) {
+  const samplePosition = formatPosition({
+    anchorPath,
+    runId,
+    slotPath: [SLOT_MID],
+  });
+
+  return samplePosition.slice(0, samplePosition.lastIndexOf("!"));
+}
+
 function nextSequentialPathAfter(
   path: readonly bigint[],
   step: bigint,
@@ -92,9 +100,9 @@ function nextSequentialPathAfter(
 }
 
 export class FugueRun {
-  readonly anchorPath: readonly bigint[];
-  readonly runId: bigint;
-  readonly prefix: FugueRunPrefix;
+  private readonly anchorPath: readonly bigint[];
+  private readonly runId: bigint;
+  private readonly prefix: string;
 
   private readonly initialSlotPath: readonly bigint[];
   private lastSlotPath: readonly bigint[] | null = null;
@@ -104,12 +112,11 @@ export class FugueRun {
     runId: bigint,
     initialSlotPath: readonly bigint[] = [SLOT_MID],
   ) {
-    formatRunPrefix({ anchorPath, runId });
     formatPosition({ anchorPath, runId, slotPath: initialSlotPath });
 
     this.anchorPath = clonePath(anchorPath);
     this.runId = runId;
-    this.prefix = formatRunPrefix({ anchorPath: this.anchorPath, runId });
+    this.prefix = formatRunPrefix(this.anchorPath, runId);
     this.initialSlotPath = clonePath(initialSlotPath);
   }
 
@@ -192,7 +199,7 @@ export class Fugue {
 
       if (slotPath === null) {
         throw new SlotExhaustedError(
-          `No slot space between ${left} and ${right} inside run ${formatRunPrefix({ anchorPath: parsedLeft.anchorPath, runId: parsedLeft.runId })}`,
+          `No slot space between ${left} and ${right} inside run ${formatRunPrefix(parsedLeft.anchorPath, parsedLeft.runId)}`,
         );
       }
 
@@ -222,7 +229,10 @@ export class Fugue {
     }
   }
 
-  startRun(left: FuguePosition | null, right: FuguePosition | null): FugueRun {
+  startRun(
+    left: FuguePosition | null,
+    right: FuguePosition | null,
+  ): { next(): FuguePosition } {
     const [parsedLeft, parsedRight] = this.parseBounds(left, right);
 
     if (
@@ -238,11 +248,11 @@ export class Fugue {
     return this.startRunFromBounds(parsedLeft, parsedRight);
   }
 
-  startRunAfter(position: FuguePosition): FugueRun {
+  startRunAfter(position: FuguePosition): { next(): FuguePosition } {
     return this.startRun(position, null);
   }
 
-  startRunBefore(position: FuguePosition): FugueRun {
+  startRunBefore(position: FuguePosition): { next(): FuguePosition } {
     return this.startRun(null, position);
   }
 
@@ -333,7 +343,7 @@ export class Fugue {
 
       if (candidates.length === 0) {
         throw new RunPrefixExhaustedError(
-          `No run-prefix space between ${formatRunPrefix({ anchorPath: left.anchorPath, runId: left.runId })} and ${formatRunPrefix({ anchorPath: right.anchorPath, runId: right.runId })}`,
+          `No run-prefix space between ${formatRunPrefix(left.anchorPath, left.runId)} and ${formatRunPrefix(right.anchorPath, right.runId)}`,
         );
       }
 
@@ -366,7 +376,7 @@ export class Fugue {
       }
 
       throw new RunPrefixExhaustedError(
-        `No run-prefix space after ${formatRunPrefix({ anchorPath: left.anchorPath, runId: left.runId })}`,
+        `No run-prefix space after ${formatRunPrefix(left.anchorPath, left.runId)}`,
       );
     }
 
@@ -391,7 +401,7 @@ export class Fugue {
     }
 
     throw new RunPrefixExhaustedError(
-      `No run-prefix space before ${formatRunPrefix({ anchorPath: parsedRight.anchorPath, runId: parsedRight.runId })}`,
+      `No run-prefix space before ${formatRunPrefix(parsedRight.anchorPath, parsedRight.runId)}`,
     );
   }
 
@@ -443,7 +453,7 @@ export class Fugue {
     );
     if (slotPath === null) {
       throw new SlotExhaustedError(
-        `No slot space after ${formatPosition(left)} in run ${formatRunPrefix({ anchorPath: left.anchorPath, runId: left.runId })}`,
+        `No slot space after ${formatPosition(left)} in run ${formatRunPrefix(left.anchorPath, left.runId)}`,
       );
     }
 
@@ -458,7 +468,7 @@ export class Fugue {
     const slotPath = this.randomPathBefore(right.slotPath, SLOT_MIN, SLOT_MAX);
     if (slotPath === null) {
       throw new SlotExhaustedError(
-        `No slot space before ${formatPosition(right)} in run ${formatRunPrefix({ anchorPath: right.anchorPath, runId: right.runId })}`,
+        `No slot space before ${formatPosition(right)} in run ${formatRunPrefix(right.anchorPath, right.runId)}`,
       );
     }
 

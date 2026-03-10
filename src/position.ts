@@ -1,5 +1,5 @@
 import { encode62, parseBase62FixedWidth } from "./codec";
-import { InvalidPositionError, InvalidRunPrefixError } from "./errors";
+import { InvalidPositionError } from "./errors";
 
 export const SEPARATOR = "!";
 export const PATH_SEPARATOR = "~";
@@ -34,13 +34,8 @@ const MAX_SLOT_PATH_LENGTH =
 const MAX_POSITION_LENGTH =
   MAX_ANCHOR_PATH_LENGTH + RUN_WIDTH + MAX_SLOT_PATH_LENGTH + 2;
 
-declare const fuguePositionBrand: unique symbol;
-declare const fugueRunPrefixBrand: unique symbol;
-
 export type FuguePosition =
   `${string}${typeof SEPARATOR}${string}${typeof SEPARATOR}${string}`;
-
-export type FugueRunPrefix = `${string}${typeof SEPARATOR}${string}`;
 
 export type ParsedFuguePosition = Readonly<{
   anchorPath: readonly bigint[];
@@ -48,20 +43,9 @@ export type ParsedFuguePosition = Readonly<{
   slotPath: readonly bigint[];
 }>;
 
-export type ParsedFugueRunPrefix = Readonly<{
-  anchorPath: readonly bigint[];
-  runId: bigint;
-}>;
-
-function assertRange(
-  value: bigint,
-  min: bigint,
-  max: bigint,
-  message: string,
-  ErrorType: typeof InvalidPositionError | typeof InvalidRunPrefixError,
-) {
+function assertRange(value: bigint, min: bigint, max: bigint, message: string) {
   if (value < min || value > max) {
-    throw new ErrorType(message);
+    throw new InvalidPositionError(message);
   }
 }
 
@@ -103,14 +87,15 @@ function assertPath(
   maxDepth: number,
   pathName: string,
   segmentName: string,
-  ErrorType: typeof InvalidPositionError | typeof InvalidRunPrefixError,
 ) {
   if (path.length === 0) {
-    throw new ErrorType(`${pathName} must contain at least 1 segment`);
+    throw new InvalidPositionError(
+      `${pathName} must contain at least 1 segment`,
+    );
   }
 
   if (path.length > maxDepth) {
-    throw new ErrorType(
+    throw new InvalidPositionError(
       `${pathName} depth must be <= ${maxDepth}, got ${path.length}`,
     );
   }
@@ -121,7 +106,6 @@ function assertPath(
       min,
       max,
       `${segmentName} must be in [${min}, ${max}], got ${segment}`,
-      ErrorType,
     );
   }
 }
@@ -134,9 +118,8 @@ function formatPath(
   maxDepth: number,
   pathName: string,
   segmentName: string,
-  ErrorType: typeof InvalidPositionError | typeof InvalidRunPrefixError,
 ) {
-  assertPath(path, min, max, maxDepth, pathName, segmentName, ErrorType);
+  assertPath(path, min, max, maxDepth, pathName, segmentName);
   return path.map((segment) => encode62(segment, width)).join(PATH_SEPARATOR);
 }
 
@@ -217,14 +200,12 @@ export function formatPosition(position: ParsedFuguePosition): FuguePosition {
     MAX_ANCHOR_PATH_DEPTH,
     "anchorPath",
     "anchor segment",
-    InvalidPositionError,
   );
   assertRange(
     runId,
     RUN_MIN,
     RUN_MAX,
     `runId must be in [${RUN_MIN}, ${RUN_MAX}], got ${runId}`,
-    InvalidPositionError,
   );
   const encodedSlotPath = formatPath(
     slotPath,
@@ -234,86 +215,9 @@ export function formatPosition(position: ParsedFuguePosition): FuguePosition {
     MAX_SLOT_PATH_DEPTH,
     "slotPath",
     "slot segment",
-    InvalidPositionError,
   );
 
   return `${encodedAnchorPath}${SEPARATOR}${encode62(runId, RUN_WIDTH)}${SEPARATOR}${encodedSlotPath}` as const;
-}
-
-function parseRunPrefixInternal(prefix: string): ParsedFugueRunPrefix | null {
-  if (prefix.length < ANCHOR_WIDTH + RUN_WIDTH + 2) {
-    return null;
-  }
-
-  const split = prefix.split(SEPARATOR);
-  if (split.length !== 2) {
-    return null;
-  }
-
-  const [anchorPathEncoded, runIdEncoded] = split as [string, string];
-
-  const anchorPath = parsePathInternal(
-    anchorPathEncoded,
-    ANCHOR_WIDTH,
-    ANCHOR_MAX,
-    MAX_ANCHOR_PATH_DEPTH,
-  );
-  const runId = parseBase62FixedWidth(runIdEncoded, RUN_WIDTH, RUN_MAX);
-
-  if (anchorPath === null || runId === null) {
-    return null;
-  }
-
-  return { anchorPath, runId };
-}
-
-export function tryParseRunPrefix(prefix: string): ParsedFugueRunPrefix | null {
-  return parseRunPrefixInternal(prefix);
-}
-
-export function isFugueRunPrefix(value: string): value is FugueRunPrefix {
-  return tryParseRunPrefix(value) !== null;
-}
-
-export function parseRunPrefix(prefix: string): ParsedFugueRunPrefix {
-  const parsed = tryParseRunPrefix(prefix);
-  if (parsed === null) {
-    throw new InvalidRunPrefixError(
-      `Invalid run prefix "${prefix}". Expected format ${ANCHOR_WIDTH}b62[~${ANCHOR_WIDTH}b62...]!${RUN_WIDTH}b62!`,
-    );
-  }
-
-  return parsed;
-}
-
-export function formatRunPrefix(prefix: ParsedFugueRunPrefix): FugueRunPrefix {
-  const encodedAnchorPath = formatPath(
-    prefix.anchorPath,
-    ANCHOR_WIDTH,
-    ANCHOR_MIN,
-    ANCHOR_MAX,
-    MAX_ANCHOR_PATH_DEPTH,
-    "anchorPath",
-    "anchor segment",
-    InvalidRunPrefixError,
-  );
-  assertRange(
-    prefix.runId,
-    RUN_MIN,
-    RUN_MAX,
-    `runId must be in [${RUN_MIN}, ${RUN_MAX}], got ${prefix.runId}`,
-    InvalidRunPrefixError,
-  );
-
-  return `${encodedAnchorPath}${SEPARATOR}${encode62(prefix.runId, RUN_WIDTH)}` as const;
-}
-
-export function getRunPrefix(position: FuguePosition): FugueRunPrefix {
-  const parsed = parsePosition(position);
-  return formatRunPrefix({
-    anchorPath: parsed.anchorPath,
-    runId: parsed.runId,
-  });
 }
 
 export function comparePaths(
@@ -346,9 +250,9 @@ export function comparePaths(
   return 0;
 }
 
-export function compareRunPrefixes(
-  a: ParsedFugueRunPrefix,
-  b: ParsedFugueRunPrefix,
+export function comparePositions(
+  a: ParsedFuguePosition,
+  b: ParsedFuguePosition,
 ) {
   const path = comparePaths(a.anchorPath, b.anchorPath);
   if (path !== 0) {
@@ -361,18 +265,6 @@ export function compareRunPrefixes(
 
   if (a.runId > b.runId) {
     return 1;
-  }
-
-  return 0;
-}
-
-export function comparePositions(
-  a: ParsedFuguePosition,
-  b: ParsedFuguePosition,
-) {
-  const prefix = compareRunPrefixes(a, b);
-  if (prefix !== 0) {
-    return prefix;
   }
 
   return comparePaths(a.slotPath, b.slotPath);

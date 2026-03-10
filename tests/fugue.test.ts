@@ -1,24 +1,23 @@
 import { describe, expect, test } from "vitest";
 import {
   Fugue,
-  FugueRun,
   InvalidBoundsError,
   InvalidPositionError,
   InvalidRandomSourceError,
-  InvalidRunPrefixError,
   RunPrefixExhaustedError,
   SecureRandomUnavailableError,
   SlotExhaustedError,
-  formatPosition,
-  parsePosition,
   type FugueRandomBytes,
 } from "../src";
+import { FugueRun } from "../src/fugue";
 import {
   ANCHOR_MAX,
   ANCHOR_MID,
   RUN_MAX,
   SLOT_MAX,
   SLOT_MID,
+  formatPosition,
+  parsePosition,
 } from "../src/position";
 
 function makeDeterministicRandomBytes(seed: number): FugueRandomBytes {
@@ -222,7 +221,7 @@ describe("fugue", () => {
     expect(parsed.anchorPath).toEqual([1n]);
     expect(parsed.runId).toBe(1n);
     expect(parsed.slotPath[0]).toBe(10n);
-    expect(parsed.slotPath.length).toBeGreaterThan(1);
+    expect(parsed.slotPath.length).toBe(2);
   });
 
   test("same-run prefix-vs-zero-descendant can be truly exhausted", () => {
@@ -365,9 +364,9 @@ describe("fugue", () => {
     expect(second < afterRun.next()).toBe(true);
   });
 
-  test("run constructor validates public inputs", () => {
-    expect(() => new FugueRun([], 1n)).toThrow(InvalidRunPrefixError);
-    expect(() => new FugueRun([1n], -1n)).toThrow(InvalidRunPrefixError);
+  test("run constructor validates inputs", () => {
+    expect(() => new FugueRun([], 1n)).toThrow(InvalidPositionError);
+    expect(() => new FugueRun([1n], -1n)).toThrow(InvalidPositionError);
     expect(() => new FugueRun([1n], 1n, [])).toThrow(InvalidPositionError);
     expect(() => new FugueRun([1n], 1n, [-1n])).toThrow(InvalidPositionError);
   });

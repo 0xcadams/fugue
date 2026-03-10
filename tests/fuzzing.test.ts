@@ -3,11 +3,11 @@ import {
   Fugue,
   RunPrefixExhaustedError,
   SlotExhaustedError,
-  formatPosition,
   isFuguePosition,
   type FuguePosition,
   type FugueRandomBytes,
 } from "../src";
+import { formatPosition } from "../src/position";
 
 function makePRNG(seed: number) {
   let state = seed >>> 0;

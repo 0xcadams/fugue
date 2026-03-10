@@ -1,26 +1,18 @@
 import { describe, expect, test } from "vitest";
-import {
-  InvalidPositionError,
-  InvalidRunPrefixError,
-  formatPosition,
-  formatRunPrefix,
-  getRunPrefix,
-  isFuguePosition,
-  isFugueRunPrefix,
-  parsePosition,
-  parseRunPrefix,
-  tryParsePosition,
-  tryParseRunPrefix,
-} from "../src";
 import { encode62 } from "../src/codec";
+import { InvalidPositionError } from "../src/errors";
 import {
   ANCHOR_WIDTH,
   comparePaths,
+  formatPosition,
+  isFuguePosition,
   MAX_ANCHOR_PATH_DEPTH,
   MAX_SLOT_PATH_DEPTH,
+  parsePosition,
   RUN_WIDTH,
   SLOT_MID,
   SLOT_WIDTH,
+  tryParsePosition,
 } from "../src/position";
 
 describe("position", () => {
@@ -48,21 +40,12 @@ describe("position", () => {
     expect(parsePosition(position)).toEqual(input);
   });
 
-  test("run prefix parsing supports anchor paths", () => {
-    const prefix = formatRunPrefix({ anchorPath: [77n, 88n], runId: 99n });
-    expect(parseRunPrefix(prefix)).toEqual({
-      anchorPath: [77n, 88n],
-      runId: 99n,
-    });
-  });
-
   test("non-throwing parse helpers are symmetric", () => {
     const position = formatPosition({
       anchorPath: [7n, 8n],
       runId: 9n,
       slotPath: [10n, 11n],
     });
-    const prefix = formatRunPrefix({ anchorPath: [7n, 8n], runId: 9n });
 
     expect(tryParsePosition(position)).toEqual({
       anchorPath: [7n, 8n],
@@ -70,13 +53,6 @@ describe("position", () => {
       slotPath: [10n, 11n],
     });
     expect(tryParsePosition("not-a-position")).toBeNull();
-    expect(isFugueRunPrefix(prefix)).toBe(true);
-    expect(isFugueRunPrefix("bad-prefix")).toBe(false);
-    expect(tryParseRunPrefix(prefix)).toEqual({
-      anchorPath: [7n, 8n],
-      runId: 9n,
-    });
-    expect(tryParseRunPrefix("bad-prefix")).toBeNull();
   });
 
   test("string order matches path-prefix order", () => {
@@ -154,22 +130,6 @@ describe("position", () => {
     );
   });
 
-  test("parseRunPrefix validates format", () => {
-    expect(() => parseRunPrefix("abc")).toThrow(InvalidRunPrefixError);
-    expect(() => parseRunPrefix("abc!!")).toThrow(InvalidRunPrefixError);
-    expect(() => parseRunPrefix("a!b!c!")).toThrow(InvalidRunPrefixError);
-    expect(() =>
-      parseRunPrefix(
-        `${encode62(1n, ANCHOR_WIDTH)}!${encode62(2n, RUN_WIDTH)}`,
-      ),
-    ).toThrow(InvalidRunPrefixError);
-
-    const invalidRangePrefix = `${encode62(1n << 64n, ANCHOR_WIDTH)}!${encode62(0n, RUN_WIDTH)}!`;
-    expect(() => parseRunPrefix(invalidRangePrefix)).toThrow(
-      InvalidRunPrefixError,
-    );
-  });
-
   test("formatPosition validates field ranges and depth caps", () => {
     expect(() =>
       formatPosition({ anchorPath: [], runId: 0n, slotPath: [0n] }),
@@ -204,25 +164,5 @@ describe("position", () => {
         slotPath: tooDeepSlotPath,
       }),
     ).toThrow(InvalidPositionError);
-  });
-
-  test("formatRunPrefix validates anchorPath depth and runId range", () => {
-    expect(() => formatRunPrefix({ anchorPath: [], runId: 0n })).toThrow(
-      InvalidRunPrefixError,
-    );
-    expect(() =>
-      formatRunPrefix({ anchorPath: [0n], runId: 1n << 96n }),
-    ).toThrow(InvalidRunPrefixError);
-  });
-
-  test("getRunPrefix matches formatted prefix", () => {
-    const position = formatPosition({
-      anchorPath: [42n, 43n],
-      runId: 99n,
-      slotPath: [7n, 8n],
-    });
-    expect(getRunPrefix(position)).toBe(
-      formatRunPrefix({ anchorPath: [42n, 43n], runId: 99n }),
-    );
   });
 });
