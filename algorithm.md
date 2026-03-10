@@ -2,64 +2,101 @@
 
 `fugue` v3 uses run-anchored lexicographic keys for ordered collaborative data.
 
-## Key Forms
+## Key forms
 
-Normal form:
+Start with the simple shape:
 
 `<anchor>!<runId>!<slot>`
 
-Escape-hatch form (only when needed):
+When Fugue needs more precision, `anchor` and `slot` become paths:
 
-`<anchor>!<runId>!<slot>!<subslot>[!<subslot2>...]`
+`<anchor>[~<subanchor>...]!<runId>!<slot>[~<subslot>...]`
 
-- `anchor`: 64-bit unsigned integer, base62 width 11.
-- `runId`: 96-bit unsigned integer, base62 width 17.
-- `slot` and each `subslot`: 64-bit unsigned integer, base62 width 11.
-- `!` (ASCII 33) is the separator.
-
-Normal keys are fixed length: `11 + 1 + 17 + 1 + 11 = 41` chars.
-Each escape-hatch level adds `1 + 11 = 12` chars.
+- `anchor` and each `subanchor`: 64-bit unsigned integer, base62 width 11
+- `runId`: 96-bit unsigned integer, base62 width 17
+- `slot` and each `subslot`: 64-bit unsigned integer, base62 width 11
+- `!` is the field separator
+- `~` is the path separator
+- maximum `anchorPath` depth: 64 segments
+- maximum `slotPath` depth: 64 segments
 
 ## Goals
 
 1. Plain lexicographic string sort equals logical list order.
-2. Any client can generate keys locally (no central allocator).
+2. Any client can generate keys locally with no central allocator.
 3. Inserts before/after/between work without rewriting existing keys.
 4. Bursts stay contiguous and concurrent bursts do not braid item-by-item.
 5. Collision probability remains negligible in practice.
 
-## Ordering Semantics
+## Ordering semantics
 
 Sort is plain string compare.
 
 Why this works:
 
-1. Fields are fixed-width base62 components.
-2. `!` sorts before base62 digits/letters.
-3. Components compare in order: `anchor`, then `runId`, then `slot`, then deeper subslots.
-4. If one key is a prefix of another, the shorter key sorts first.
+1. Segments are fixed-width base62 components.
+2. `!` sorts before `~`, digits, and letters.
+3. Fields compare in order: `anchorPath`, then `runId`, then `slotPath`.
+4. Inside a path, segments compare left to right.
+5. If one path is a strict prefix of the other, the shorter path sorts first.
 
-So, for example:
+Examples:
 
-`07!abc!50 < 07!abc!50!60 < 07!abc!51`
+```text
+07!abc!50 < 07!abc!50~60 < 07!abc!51
+07!abc!50 < 07~01!abc!50 < 08!abc!50
+```
 
-## Run Model
+## Run model
 
 A run is one insertion burst (paste, uninterrupted typing, etc.).
 
 All items in one run share:
 
-`<anchor>!<runId>!`
+`<anchorPath>!<runId>!`
 
-Only slot components change inside a run. This is the anti-braiding property: each run is one contiguous sorted block.
+Only the `slotPath` changes inside a run.
+That is the anti-braiding property: each run is one contiguous sorted block.
 
 ## Constants
 
+- `ANCHOR_MIN = 0`
+- `ANCHOR_MAX = 2^64 - 1`
+- `ANCHOR_MID = 2^63`
 - `SLOT_MIN = 0`
 - `SLOT_MAX = 2^64 - 1`
 - `SLOT_MID = 2^63`
-- `SLOT_STEP = 2^48` (default `run.after()`/`run.before()` stride)
-- `MAX_SUBSLOTS = 64` (maximum parsed/formatted escape-hatch depth)
+- internal run stride = `2^48`
+- `MAX_ANCHOR_PATH_DEPTH = 64`
+- `MAX_SLOT_PATH_DEPTH = 64`
+
+## Why subanchors and subslots exist
+
+Most keys stay flat.
+
+Fugue only deepens a path when the current depth has no room:
+
+- `subanchors` appear when there is no room to place a fresh run between neighboring runs at the current anchor depth
+- `subslots` appear when there is no room to place an item between neighboring items in the same run at the current slot depth
+
+This keeps old keys stable while still making new space.
+
+## Core helper: `betweenPath(L, R)`
+
+`betweenPath(L, R)` returns a path strictly between two paths.
+
+Rule:
+
+1. Walk both paths left to right.
+2. If segments are equal, copy the shared segment and continue.
+3. At the first depth with a numeric gap, choose a segment value inside that open interval and stop.
+4. If there is no room at that depth, copy the exhausted prefix and descend one level deeper.
+5. If the gap is mathematically impossible, return `null`.
+
+This helper is used for:
+
+- `anchorPath` allocation between runs
+- `slotPath` allocation inside a run
 
 ## Operations
 
@@ -73,104 +110,108 @@ Inputs:
 
 Algorithm:
 
-1. Parse bounds into `(anchor, runId, tail)`.
-2. Convert missing bounds to run-prefix sentinels:
-   - left sentinel: `(0, 0)`
-   - right sentinel: `(2^64 - 1, 2^96 - 1)`
-3. Choose anchor:
-   - if `aR - aL >= 2`, choose midpoint `a = floor((aL + aR) / 2)`
-   - if `aR - aL == 1`, evaluate both anchors and pick one that has a non-empty `runId` interval
-   - if `aR - aL == 0`, use that shared anchor
-4. Choose `runId` at that anchor so the run prefix is strictly between neighbors:
-   - if `a == aL`, require `runId > runIdL`
-   - if `a == aR`, require `runId < runIdR`
-   - choose randomly from the resulting valid interval
-5. Set first slot component to `SLOT_MID`.
-6. Emit key in normal form.
+1. Parse bounds into `(anchorPath, runId, slotPath)`.
+2. If both bounds are missing, choose:
+   - `anchorPath = [ANCHOR_MID]`
+   - `runId = random96()`
+   - first `slotPath = [SLOT_MID]`
+3. If both bounds have the same `anchorPath`, allocate only by `runId`:
+   - require `left.runId < newRunId < right.runId`
+4. If the bounds have different `anchorPath`s, try:
+   - `anchorPath = betweenPath(left.anchorPath, right.anchorPath)`
+   - `runId = random96()`
+5. If there is no `anchorPath` space, pack under an existing neighboring `anchorPath`:
+   - left candidate: same `anchorPath` with `runId > left.runId`
+   - right candidate: same `anchorPath` with `runId < right.runId`
+6. If neither candidate has `runId` space, fail with `RunPrefixExhaustedError`.
 
-### 2) `run.after()`/`run.before()` within one run
+### 2) `run.next()` inside one run
 
-Given run prefix `(anchor, runId)`:
+Given run prefix `(anchorPath, runId)`:
 
-- `run.after()`: `slot = lastSlot + SLOT_STEP`
-- `run.before()`: `slot = firstSlot - SLOT_STEP`
+- first `run.next()`: `slotPath = [SLOT_MID]`
+- later `run.next()`: advance the last slot segment by the internal stride when possible
+- if the current segment is full, clamp to `SLOT_MAX`
+- if the segment is already `SLOT_MAX`, append a new `SLOT_MID` child segment
 
-When this stays within `[SLOT_MIN, SLOT_MAX]`, emit normal-form keys.
+So a long burst can grow like:
+
+```text
+[MID]
+[MID + stride]
+...
+[MAX]
+[MAX~MID]
+[MAX~MID + stride]
+```
+
+`run.next()` only fails when the slot path is already at depth 64 and every segment is exhausted.
 
 ### 3) Insert between two items in the same run
 
-If both neighbors share `(anchor, runId)`, insert using slot components:
+If both neighbors share `(anchorPath, runId)`, insert using slot paths:
 
-1. Walk slot components left-to-right.
-2. At the first level with numeric gap `>= 2`, choose a random value in that open interval and stop.
-3. If gap is `1` (adjacent), reuse the left value at that level and descend one level (escape hatch).
-4. If one side ends at a level, continue with the same rule and randomize when a true interval exists.
-
-This creates a subslot key that still sorts strictly between neighbors.
+1. call `betweenPath(left.slotPath, right.slotPath)`
+2. if it succeeds, emit `<anchorPath>!<runId>!<slotPath>`
+3. if it returns `null`, fail with `SlotExhaustedError`
 
 Example:
 
-- left: `...!50`
-- right: `...!51`
-- inserted: `...!50!50`
+```text
+...!50 < ...!50~50 < ...!51
+```
 
-Ordering remains:
+### 4) Open-edge fallback when fresh run-prefix allocation fails
 
-`...!50 < ...!50!50 < ...!51`
+`between(left, null)` and `between(null, right)` first try to create a fresh run.
 
-If a subslot gap also becomes adjacent, repeat the same rule:
+If that fails at the boundary:
 
-`...!50!50 < ...!50!50!50 < ...!50!51`
+- append inside `left`'s run for `between(left, null)`
+- prepend inside `right`'s run for `between(null, right)`
 
-This can recurse deeper when needed (up to `MAX_SUBSLOTS`) without rewriting existing keys.
+This preserves correct ordering even when there is no fresh run-prefix space at that edge.
 
-### 4) Run exhaustion handling (long-burst edge exhaustion)
+## Exhaustion and packing
 
-`FugueRun.after()`/`FugueRun.before()` throw `SlotExhaustedError` when they hit slot-range limits.
+### Slot-path exhaustion (inside one run)
 
-To continue a burst without rewriting existing keys, the caller starts a new adjacent run:
+Use deeper `slotPath` segments.
+If the gap is impossible or the slot path depth cap is hit, throw `SlotExhaustedError`.
 
-- after-side exhaustion: call `fugue.startRunAfter(lastKeyFromExhaustedRun)`
-- before-side exhaustion: call `fugue.startRunBefore(firstKeyFromExhaustedRun)`
+### Anchor-path exhaustion (between runs)
 
-This is the run escape hatch at API level. It may split one very long burst into multiple contiguous run blocks, while preserving correct sort order.
+Use deeper `anchorPath` segments.
+If there is still no `anchorPath` space, pack under a neighboring `anchorPath` and order runs with `runId`.
+If there is no valid `runId` interval either, throw `RunPrefixExhaustedError`.
 
-## Exhaustion and Packing
+## Why explicit errors still exist
 
-### Slot-gap exhaustion (inside one run)
+Variable-depth paths make the space much denser, but not perfectly dense.
 
-Use the slot escape hatch (`subslot`, then deeper levels only if needed), with random choice whenever multiple valid values exist.
+Examples of impossible gaps:
 
-### Anchor exhaustion (between runs)
+- there is no path strictly between `p` and `p~0`
+- there is no fresh run prefix between identical `anchorPath`s with adjacent `runId`s
 
-If there is no anchor value between neighbors, pack under an existing anchor and order runs with `runId`.
+Fugue reports those cases explicitly instead of generating an incorrect key.
 
-Example shape:
-
-- existing left prefix: `(07, G1h9kQ)`
-- existing right prefix: `(08, T9xYz1)`
-- no anchor between 07 and 08 -> choose anchor 07
-- pick `runId` with string order `G1h9kQ < newRunId`
-
-Result: new run block lands between those neighbors.
-
-### runId collisions and scarcity
-
-- Random 96-bit `runId` collisions are negligible for practical scales.
-- If a generated `runId` does not satisfy required ordering bounds, generate another.
-- If no `runId` interval exists for the chosen anchor (`minRunId > maxRunId`), fresh run-prefix allocation is exhausted at that location; `startRun(...)` must fail explicitly, and `between(...)` can only continue via documented edge fallback behavior.
-
-## Collision Model
+## Collision model
 
 Default random source is CSPRNG (`crypto.getRandomValues`).
 Custom RNG injection is supported for environments without Web Crypto.
 
-When multiple valid keys exist (runId ranges, same-run slot gaps, and boundary fallback allocation), Fugue samples one randomly.
-This keeps collisions probabilistic and negligible in practice, rather than deterministically repeating the same key.
+When multiple valid keys exist, Fugue samples one randomly for:
+
+- `runId` allocation
+- bounded `betweenPath(...)` choices
+- edge fallback choices
+
+This keeps collisions probabilistic and negligible in practice.
 
 ## Complexity
 
-- Normal key generation: `O(1)`
-- Escape-hatch insertion: `O(d)` where `d` is added subslot depth (typically very small)
-- Parse/format: `O(k)` where `k` is component count (`k = 3` in normal form)
-- Key length: 41 chars in normal form, `41 + 12*d` with depth `d`
+- normal key generation: typically `O(1)`
+- bounded path insertion: `O(d)` where `d` is added path depth
+- parse/format: `O(k)` where `k` is path segment count
+- key length: `41` chars in the flat form, plus `12` chars for each extra path segment in either path field

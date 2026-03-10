@@ -4,8 +4,8 @@ import {
   RunPrefixExhaustedError,
   SlotExhaustedError,
   formatPosition,
-  getRunPrefix,
   isFuguePosition,
+  type FuguePosition,
   type FugueRandomBytes,
 } from "../src";
 
@@ -42,7 +42,7 @@ function makeDeterministicRandomBytes(seed: number): FugueRandomBytes {
   };
 }
 
-function sortedInsert(values: string[], value: string) {
+function sortedInsert(values: FuguePosition[], value: FuguePosition) {
   let low = 0;
   let high = values.length;
 
@@ -58,7 +58,7 @@ function sortedInsert(values: string[], value: string) {
   values.splice(low, 0, value);
 }
 
-function verifySorted(values: string[]) {
+function verifySorted(values: readonly FuguePosition[]) {
   for (let i = 1; i < values.length; i++) {
     expect(values[i - 1]! < values[i]!).toBe(true);
   }
@@ -66,8 +66,16 @@ function verifySorted(values: string[]) {
 
 describe("fuzzing", () => {
   test("repeated concurrent inserts into one gap stay ordered and unique", () => {
-    const left = formatPosition({ anchor: 10n, runId: 20n, slot: 100n });
-    const right = formatPosition({ anchor: 10n, runId: 20n, slot: 101n });
+    const left = formatPosition({
+      anchorPath: [10n],
+      runId: 20n,
+      slotPath: [100n],
+    });
+    const right = formatPosition({
+      anchorPath: [10n],
+      runId: 20n,
+      slotPath: [101n],
+    });
     const clients = [
       new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc001) }),
       new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc002) }),
@@ -75,7 +83,7 @@ describe("fuzzing", () => {
       new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc004) }),
     ];
 
-    const inserted: string[] = [];
+    const inserted: FuguePosition[] = [];
 
     for (let round = 0; round < 200; round++) {
       for (const client of clients) {
@@ -104,10 +112,10 @@ describe("fuzzing", () => {
         new Fugue({ randomBytes: makeDeterministicRandomBytes(seed ^ 0x33) }),
       ];
 
-      const positions: string[] = [];
-      const unique = new Set<string>();
+      const positions: FuguePosition[] = [];
+      const unique = new Set<FuguePosition>();
 
-      const insert = (value: string) => {
+      const insert = (value: FuguePosition) => {
         expect(isFuguePosition(value)).toBe(true);
         expect(unique.has(value)).toBe(false);
 
@@ -167,9 +175,9 @@ describe("fuzzing", () => {
               try {
                 const run = client.startRun(last, null);
 
-                const k1 = run.first;
-                const k2 = run.after();
-                const k3 = run.after();
+                const k1 = run.next();
+                const k2 = run.next();
+                const k3 = run.next();
 
                 expect(last < k1).toBe(true);
                 expect(k1 < k2).toBe(true);
@@ -199,34 +207,28 @@ describe("fuzzing", () => {
               const left = positions[leftIndex]!;
               const right = positions[leftIndex + 1]!;
 
-              if (getRunPrefix(left) === getRunPrefix(right)) {
+              try {
+                const run = client.startRun(left, right);
+                const k1 = run.next();
+                const k2 = run.next();
+
+                expect(left < k1).toBe(true);
+                expect(k1 < k2).toBe(true);
+                expect(k2 < right).toBe(true);
+
+                insert(k1);
+                insert(k2);
+              } catch (error) {
+                if (!(error instanceof RunPrefixExhaustedError)) {
+                  throw error;
+                }
+
                 const inserted = client.between(left, right);
                 expect(left < inserted).toBe(true);
                 expect(inserted < right).toBe(true);
                 insert(inserted);
-              } else {
-                try {
-                  const run = client.startRun(left, right);
-                  const k1 = run.first;
-                  const k2 = run.after();
-
-                  expect(left < k1).toBe(true);
-                  expect(k1 < k2).toBe(true);
-                  expect(k2 < right).toBe(true);
-
-                  insert(k1);
-                  insert(k2);
-                } catch (error) {
-                  if (!(error instanceof RunPrefixExhaustedError)) {
-                    throw error;
-                  }
-
-                  const inserted = client.between(left, right);
-                  expect(left < inserted).toBe(true);
-                  expect(inserted < right).toBe(true);
-                  insert(inserted);
-                }
               }
+
               break;
             }
           }

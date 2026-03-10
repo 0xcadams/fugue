@@ -6,6 +6,7 @@
   "scripts": {
     "clean": "rm -rf dist node_modules coverage",
     "build": "tsup src/index.ts --format cjs,esm --dts",
+    "format": "prettier --write .",
     "release": "pnpm run build && pnpm publish",
     "test": "vitest run --typecheck --coverage",
     "test:types": "cd tests && tsc --noEmit",

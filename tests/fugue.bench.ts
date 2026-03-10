@@ -1,5 +1,6 @@
 import { bench, describe } from "vitest";
-import { Fugue, SLOT_MAX, formatPosition } from "../src";
+import { Fugue, formatPosition, type FuguePosition } from "../src";
+import { ANCHOR_MAX, SLOT_MAX } from "../src/position";
 
 describe("benchmarks", () => {
   bench("single", () => {
@@ -16,25 +17,24 @@ describe("benchmarks", () => {
     const right = fugue.after(left);
     const run = fugue.startRun(left, right);
 
-    run.after();
-    run.after();
-    run.before();
+    run.next();
+    run.next();
+    run.next();
   });
 
   bench("multiple instances", () => {
     const instances = Array.from({ length: 100 }, () => new Fugue());
 
-    let firstKey: string | null = null;
-    let lastKey: string | null = null;
+    let firstKey: FuguePosition | null = null;
+    let lastKey: FuguePosition | null = null;
 
-    // Create initial position for first instance
     const firstInstance = instances[0];
     if (firstInstance) {
       firstKey = firstInstance.first();
       lastKey = firstInstance.after(firstKey);
     }
 
-    let previousKey: string | null = firstKey;
+    let previousKey: FuguePosition | null = firstKey;
 
     for (let j = 0; j < 10; j++) {
       for (const instance of instances) {
@@ -44,51 +44,56 @@ describe("benchmarks", () => {
     }
   });
 
-  bench("same-run escape hatch (adjacent slots)", () => {
-    const fugue = new Fugue();
-
-    const left = formatPosition({ anchor: 12n, runId: 34n, slot: 50n });
-    const right = formatPosition({ anchor: 12n, runId: 34n, slot: 51n });
-    fugue.between(left, right);
-  });
-
-  bench("same-run escape hatch (deep level)", () => {
+  bench("same-run deepens for adjacent slots", () => {
     const fugue = new Fugue();
 
     const left = formatPosition({
-      anchor: 12n,
+      anchorPath: [12n],
       runId: 34n,
-      slot: 50n,
-      subslots: [50n],
+      slotPath: [50n],
     });
     const right = formatPosition({
-      anchor: 12n,
+      anchorPath: [12n],
       runId: 34n,
-      slot: 50n,
-      subslots: [51n],
+      slotPath: [51n],
     });
     fugue.between(left, right);
   });
 
-  bench("append boundary uses escape hatch", () => {
+  bench("same-run deep zero-tail case", () => {
     const fugue = new Fugue();
 
     const left = formatPosition({
-      anchor: 7n,
-      runId: 9n,
-      slot: SLOT_MAX,
+      anchorPath: [12n],
+      runId: 34n,
+      slotPath: [50n],
+    });
+    const right = formatPosition({
+      anchorPath: [12n],
+      runId: 34n,
+      slotPath: [50n, 0n, 51n],
+    });
+    fugue.between(left, right);
+  });
+
+  bench("append boundary uses same-run fallback", () => {
+    const fugue = new Fugue();
+
+    const left = formatPosition({
+      anchorPath: Array.from({ length: 64 }, () => ANCHOR_MAX),
+      runId: (1n << 96n) - 1n,
+      slotPath: [SLOT_MAX - 2n],
     });
     fugue.between(left, null);
   });
 
-  bench("prepend boundary uses escape hatch", () => {
+  bench("prepend boundary uses same-run fallback", () => {
     const fugue = new Fugue();
 
     const right = formatPosition({
-      anchor: 7n,
-      runId: 9n,
-      slot: 0n,
-      subslots: [9n],
+      anchorPath: [0n],
+      runId: 0n,
+      slotPath: [2n],
     });
     fugue.between(null, right);
   });
