@@ -20,41 +20,77 @@ function digitToValue(charCode: number) {
   return -1;
 }
 
-export function encode62(value: bigint, width: number) {
+function assertWidth(width: number) {
   if (width <= 0) {
     throw new InvalidBase62Error(`width must be > 0, got ${width}`);
   }
+}
+
+function finalizeEncodedValue(
+  encoded: string,
+  width: number,
+  value: bigint | number,
+) {
+  const normalized = encoded.length === 0 ? "0" : encoded;
+  if (normalized.length > width) {
+    throw new InvalidBase62Error(
+      `value ${value} cannot be encoded in width ${width} (needs ${normalized.length})`,
+    );
+  }
+
+  return normalized.padStart(width, "0");
+}
+
+function hasFixedWidthSlice(value: string, start: number, width: number) {
+  return start >= 0 && width > 0 && start + width <= value.length;
+}
+
+function parseBase62DigitsAt<T>(
+  value: string,
+  start: number,
+  width: number,
+  seed: T,
+  accumulate: (current: T, digit: number) => T,
+  isAllowed: (current: T) => boolean,
+): T | null {
+  if (!hasFixedWidthSlice(value, start, width)) {
+    return null;
+  }
+
+  let out = seed;
+  for (let index = 0; index < width; index++) {
+    const digit = digitToValue(value.charCodeAt(start + index));
+    if (digit < 0) {
+      return null;
+    }
+
+    out = accumulate(out, digit);
+  }
+
+  return isAllowed(out) ? out : null;
+}
+
+export function encode62(value: bigint, width: number) {
+  assertWidth(width);
 
   if (value < 0n) {
     throw new InvalidBase62Error(`value must be >= 0, got ${value}`);
   }
 
-  let out = "";
+  let encoded = "";
   let rest = value;
 
   while (rest > 0n) {
     const digit = Number(rest % BASE62);
-    out = DIGITS[digit]! + out;
+    encoded = DIGITS[digit]! + encoded;
     rest /= BASE62;
   }
 
-  if (out.length === 0) {
-    out = "0";
-  }
-
-  if (out.length > width) {
-    throw new InvalidBase62Error(
-      `value ${value} cannot be encoded in width ${width} (needs ${out.length})`,
-    );
-  }
-
-  return out.padStart(width, "0");
+  return finalizeEncodedValue(encoded, width, value);
 }
 
 export function encode62Number(value: number, width: number) {
-  if (width <= 0) {
-    throw new InvalidBase62Error(`width must be > 0, got ${width}`);
-  }
+  assertWidth(width);
 
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new InvalidBase62Error(
@@ -62,36 +98,27 @@ export function encode62Number(value: number, width: number) {
     );
   }
 
-  let out = "";
+  let encoded = "";
   let rest = value;
 
   while (rest > 0) {
     const digit = rest % BASE62_NUMBER;
-    out = DIGITS[digit]! + out;
+    encoded = DIGITS[digit]! + encoded;
     rest = Math.floor(rest / BASE62_NUMBER);
   }
 
-  if (out.length === 0) {
-    out = "0";
-  }
-
-  if (out.length > width) {
-    throw new InvalidBase62Error(
-      `value ${value} cannot be encoded in width ${width} (needs ${out.length})`,
-    );
-  }
-
-  return out.padStart(width, "0");
+  return finalizeEncodedValue(encoded, width, value);
 }
 
 export function decode62(value: string) {
   let out = 0n;
 
-  for (let i = 0; i < value.length; i++) {
-    const charCode = value.charCodeAt(i);
-    const digit = digitToValue(charCode);
+  for (let index = 0; index < value.length; index++) {
+    const digit = digitToValue(value.charCodeAt(index));
     if (digit < 0) {
-      throw new InvalidBase62Error(`Invalid base62 character "${value[i]!}"`);
+      throw new InvalidBase62Error(
+        `Invalid base62 character "${value[index]!}"`,
+      );
     }
 
     out = out * BASE62 + BigInt(digit);
@@ -100,72 +127,67 @@ export function decode62(value: string) {
   return out;
 }
 
-export function parseBase62FixedWidth(
+export function decodeBase62FixedWidth(
   value: string,
   width: number,
   maxAllowed: bigint,
-): bigint | null {
-  return parseBase62FixedWidthAt(value, 0, width, maxAllowed);
-}
+): bigint | null;
 
-export function parseBase62FixedWidthNumber(
+export function decodeBase62FixedWidth(
   value: string,
   width: number,
   maxAllowed: number,
-): number | null {
-  return parseBase62FixedWidthNumberAt(value, 0, width, maxAllowed);
+): number | null;
+
+export function decodeBase62FixedWidth(
+  value: string,
+  width: number,
+  maxAllowed: bigint | number,
+): bigint | number | null {
+  if (typeof maxAllowed === "bigint") {
+    return decodeBase62FixedWidthAt(value, 0, width, maxAllowed);
+  }
+
+  return decodeBase62FixedWidthAt(value, 0, width, maxAllowed);
 }
 
-export function parseBase62FixedWidthAt(
+export function decodeBase62FixedWidthAt(
   value: string,
   start: number,
   width: number,
   maxAllowed: bigint,
-): bigint | null {
-  if (start < 0 || width <= 0 || start + width > value.length) {
-    return null;
-  }
+): bigint | null;
 
-  let out = 0n;
-  for (let i = 0; i < width; i++) {
-    const digit = digitToValue(value.charCodeAt(start + i));
-    if (digit < 0) {
-      return null;
-    }
-
-    out = out * BASE62 + BigInt(digit);
-  }
-
-  if (out > maxAllowed) {
-    return null;
-  }
-
-  return out;
-}
-
-export function parseBase62FixedWidthNumberAt(
+export function decodeBase62FixedWidthAt(
   value: string,
   start: number,
   width: number,
   maxAllowed: number,
-): number | null {
-  if (start < 0 || width <= 0 || start + width > value.length) {
-    return null;
+): number | null;
+
+export function decodeBase62FixedWidthAt(
+  value: string,
+  start: number,
+  width: number,
+  maxAllowed: bigint | number,
+): bigint | number | null {
+  if (typeof maxAllowed === "bigint") {
+    return parseBase62DigitsAt(
+      value,
+      start,
+      width,
+      0n,
+      (current, digit) => current * BASE62 + BigInt(digit),
+      (current) => current <= maxAllowed,
+    );
   }
 
-  let out = 0;
-  for (let i = 0; i < width; i++) {
-    const digit = digitToValue(value.charCodeAt(start + i));
-    if (digit < 0) {
-      return null;
-    }
-
-    out = out * BASE62_NUMBER + digit;
-  }
-
-  if (!Number.isSafeInteger(out) || out > maxAllowed) {
-    return null;
-  }
-
-  return out;
+  return parseBase62DigitsAt(
+    value,
+    start,
+    width,
+    0,
+    (current, digit) => current * BASE62_NUMBER + digit,
+    (current) => Number.isSafeInteger(current) && current <= maxAllowed,
+  );
 }

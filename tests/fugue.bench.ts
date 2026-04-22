@@ -99,12 +99,16 @@ describe("fugue", () => {
   bench("burst continuation deepens at coord max", () => {
     const burst = new FugueBurst([TOP_COORD_MID], [1n]);
     const state = burst as unknown as {
-      lastPosition: { coords: bigint[]; bursts: bigint[] };
+      currentNestedCoords: number[];
+      currentBursts: number[];
+      currentFinalCoord: number;
+      currentStem: string;
+      prefixStem: string;
     };
-    state.lastPosition = {
-      coords: [TOP_COORD_MID, NESTED_COORD_MAX_RIGHT],
-      bursts: [1n],
-    };
+    state.currentNestedCoords = [];
+    state.currentBursts = [1];
+    state.currentFinalCoord = Number(NESTED_COORD_MAX_RIGHT);
+    state.currentStem = state.prefixStem;
 
     burst.next();
   });

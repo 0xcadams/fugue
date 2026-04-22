@@ -1,480 +1,66 @@
 import {
   BurstSpaceExhaustedError,
-  CoordSpaceExhaustedError,
   InvalidBoundsError,
-  InvalidPositionError,
   InvalidRandomSourceError,
-  SecureRandomUnavailableError,
 } from "./errors";
-import { encode62, encode62Number } from "./codec";
+import { FugueBurst, type PreparedBurstPrefix } from "./internal/fugue-burst";
 import {
-  COORD_STRIDE,
+  BURST_DEPTH_EXCEEDED_MESSAGE,
+  PreparedPositionCache,
+  chooseBurstToken,
+  defaultRandomBytes,
+  midpointPositionAtSameDepth,
+  nextSequentialTopCoordAfter,
+  nextSequentialTopCoordBefore,
+  randomBelow,
+  randomBelowNumber,
+  type FugueRandomBytes,
+} from "./internal/fugue-support";
+import {
+  comparePreparedPathSlices,
+  comparePreparedPositions,
+  isPreparedPathPrefix,
+  isPreparedPositionPrefix,
+  nestedCoordsForBurstDepth,
+  toPreparedLeftAncestor,
+} from "./internal/prepared-path";
+import {
   MAX_BURST_DEPTH,
-  NESTED_COORD_MAX_RIGHT_NUMBER,
-  NESTED_COORD_MID_NUMBER,
-  SEPARATOR,
-  TOP_COORD_MAX_RIGHT,
-  TOP_COORD_WIDTH,
   TOP_COORD_MID,
   burstMaxNumberAtDepth,
-  burstWidthAtDepth,
-  comparePreparedPositions,
-  coordWidthAtDepth,
-  formatPreparedPositionUnchecked,
-  isPreparedPositionPrefix,
+} from "./internal/position-schema";
+import {
   preparePosition,
-  toPreparedLeftAncestor,
   type FuguePosition,
   type PreparedFuguePath,
   type PreparedFuguePosition,
 } from "./position";
 
-const MAX_RANDOM_REJECTION_ATTEMPTS = 128;
-const BURST_DEPTH_EXCEEDED_MESSAGE = `Cannot open another nested burst: burst depth exceeds ${MAX_BURST_DEPTH}`;
-const PREPARED_POSITION_CACHE_LIMIT = 16_384;
-
-export type FugueRandomBytes = (byteLength: number) => Uint8Array;
+export { FugueBurst };
+export type { FugueRandomBytes };
 
 export type FugueOptions = {
   randomBytes?: FugueRandomBytes;
   allowInsecureRandom?: boolean;
 };
 
-type PreparedBurstPrefix = Readonly<{
-  topCoord: bigint;
-  bursts: readonly number[];
-  nestedCoords: readonly number[];
-}>;
-
-type RememberPreparedPosition = (position: PreparedFuguePosition) => void;
-
-class PreparedPositionCache {
-  private readonly entries = new Map<FuguePosition, PreparedFuguePosition>();
-
-  get(text: FuguePosition) {
-    const cached = this.entries.get(text);
-    if (cached === undefined) {
-      return null;
-    }
-
-    this.entries.delete(text);
-    this.entries.set(text, cached);
-    return cached;
-  }
-
-  set(position: PreparedFuguePosition) {
-    this.entries.delete(position.text);
-    this.entries.set(position.text, position);
-
-    if (this.entries.size > PREPARED_POSITION_CACHE_LIMIT) {
-      const oldest = this.entries.keys().next().value as
-        | FuguePosition
-        | undefined;
-      if (oldest !== undefined) {
-        this.entries.delete(oldest);
-      }
-    }
-
-    return position;
-  }
+function createRootBurstPrefix(burst: number): PreparedBurstPrefix {
+  return {
+    topCoord: TOP_COORD_MID,
+    bursts: [burst],
+    nestedCoords: [],
+  };
 }
 
-function bitLength(value: bigint) {
-  return value.toString(2).length;
-}
-
-function bitLengthNumber(value: number) {
-  return Math.floor(Math.log2(value)) + 1;
-}
-
-function bytesToBigInt(bytes: Uint8Array) {
-  let value = 0n;
-
-  for (const byte of bytes) {
-    value = (value << 8n) + BigInt(byte);
-  }
-
-  return value;
-}
-
-function cloneNumberPath(path: readonly number[]) {
-  return [...path];
-}
-
-function toSafeInteger(value: bigint, label: string) {
-  const converted = Number(value);
-  if (!Number.isSafeInteger(converted)) {
-    throw new InvalidPositionError(
-      `${label} must fit in a safe integer, got ${value}`,
-    );
-  }
-
-  return converted;
-}
-
-function toPreparedBurstPrefix(
-  prefixCoords: readonly bigint[],
-  prefixBursts: readonly bigint[],
+function createFlatBurstPrefix(
+  topCoord: bigint,
+  burst: number,
 ): PreparedBurstPrefix {
   return {
-    topCoord: prefixCoords[0]!,
-    bursts: prefixBursts.map((burst, depth) => {
-      return toSafeInteger(burst, `burst at depth ${depth}`);
-    }),
-    nestedCoords: prefixCoords.slice(1).map((coord, index) => {
-      return toSafeInteger(coord, `coord at depth ${index + 1}`);
-    }),
-  };
-}
-
-function formatPreparedPrefixStem(prefix: PreparedBurstPrefix) {
-  if (prefix.bursts.length !== prefix.nestedCoords.length + 1) {
-    throw new InvalidPositionError(
-      `burst prefixes must satisfy bursts.length = nestedCoords.length + 1, got ${prefix.bursts.length} bursts and ${prefix.nestedCoords.length} nested coords`,
-    );
-  }
-
-  let out = `${encode62(prefix.topCoord, TOP_COORD_WIDTH)}${SEPARATOR}`;
-
-  for (let depth = 0; depth < prefix.bursts.length; depth++) {
-    out += encode62Number(prefix.bursts[depth]!, burstWidthAtDepth(depth));
-    out += SEPARATOR;
-
-    if (depth < prefix.nestedCoords.length) {
-      out += encode62Number(
-        prefix.nestedCoords[depth]!,
-        coordWidthAtDepth(depth + 1),
-      );
-      out += SEPARATOR;
-    }
-  }
-
-  return out;
-}
-
-function stemFromCurrentPosition(
-  topCoord: bigint,
-  bursts: readonly number[],
-  nestedCoords: readonly number[],
-) {
-  return formatPreparedPrefixStem({
     topCoord,
-    bursts,
-    nestedCoords,
-  });
-}
-
-function nextSequentialTopCoordAfter(coord: bigint, maxRight: bigint) {
-  if (coord <= maxRight - COORD_STRIDE) {
-    return coord + COORD_STRIDE;
-  }
-
-  if (coord < maxRight) {
-    return maxRight;
-  }
-
-  return null;
-}
-
-function nextSequentialTopCoordBefore(coord: bigint) {
-  if (coord >= 1n + COORD_STRIDE) {
-    return coord - COORD_STRIDE;
-  }
-
-  if (coord > 1n) {
-    return 1n;
-  }
-
-  return null;
-}
-
-function nextSequentialNestedCoordAfter(coord: number) {
-  if (coord <= NESTED_COORD_MAX_RIGHT_NUMBER - Number(COORD_STRIDE)) {
-    return coord + Number(COORD_STRIDE);
-  }
-
-  if (coord < NESTED_COORD_MAX_RIGHT_NUMBER) {
-    return NESTED_COORD_MAX_RIGHT_NUMBER;
-  }
-
-  return null;
-}
-
-function midpointRightCoordBetween(left: number, right: number) {
-  if (right - left <= 2) {
-    return null;
-  }
-
-  let candidate = Math.floor((left + right) / 2);
-  if (candidate % 2 === 0) {
-    candidate += 1;
-  }
-
-  if (candidate >= right) {
-    candidate -= 2;
-  }
-
-  if (candidate <= left || candidate >= right) {
-    return null;
-  }
-
-  return candidate;
-}
-
-function midpointPositionAtSameDepth(
-  left: PreparedFuguePosition,
-  right: PreparedFuguePosition,
-): PreparedFuguePosition | null {
-  if (left.topCoord !== right.topCoord || left.depth !== right.depth) {
-    return null;
-  }
-
-  for (let depth = 0; depth < left.depth; depth++) {
-    if (
-      left.bursts[depth] !== right.bursts[depth] ||
-      (depth < left.depth - 1 &&
-        left.nestedCoords[depth] !== right.nestedCoords[depth])
-    ) {
-      return null;
-    }
-  }
-
-  const midpoint = midpointRightCoordBetween(left.finalCoord, right.finalCoord);
-  if (midpoint === null) {
-    return null;
-  }
-
-  const prepared: PreparedFuguePosition = {
-    topCoord: left.topCoord,
-    bursts: left.bursts,
-    nestedCoords: left.nestedCoords,
-    finalCoord: midpoint,
-    depth: left.depth,
-    text: "" as FuguePosition,
+    bursts: [burst],
+    nestedCoords: [],
   };
-  const text = formatPreparedPositionUnchecked(prepared);
-  return {
-    ...prepared,
-    text,
-  };
-}
-
-function preparedCoordAtDepth(position: PreparedFuguePath, depth: number) {
-  return depth < position.depth - 1
-    ? position.nestedCoords[depth]!
-    : position.finalCoord;
-}
-
-function isPreparedPrefixAtDepth(
-  position: PreparedFuguePath,
-  depth: number,
-  value: PreparedFuguePath,
-) {
-  if (position.topCoord !== value.topCoord || depth > value.depth) {
-    return false;
-  }
-
-  for (let index = 0; index < depth; index++) {
-    if (
-      position.bursts[index] !== value.bursts[index] ||
-      preparedCoordAtDepth(position, index) !==
-        preparedCoordAtDepth(value, index)
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function comparePreparedPrefixAtDepth(
-  position: PreparedFuguePath,
-  depth: number,
-  right: PreparedFuguePath,
-) {
-  if (position.topCoord < right.topCoord) {
-    return -1;
-  }
-
-  if (position.topCoord > right.topCoord) {
-    return 1;
-  }
-
-  const sharedDepth = Math.min(depth, right.depth);
-  for (let index = 0; index < sharedDepth; index++) {
-    const leftBurst = position.bursts[index]!;
-    const rightBurst = right.bursts[index]!;
-    if (leftBurst < rightBurst) {
-      return -1;
-    }
-
-    if (leftBurst > rightBurst) {
-      return 1;
-    }
-
-    const leftCoord = preparedCoordAtDepth(position, index);
-    const rightCoord = preparedCoordAtDepth(right, index);
-    if (leftCoord < rightCoord) {
-      return -1;
-    }
-
-    if (leftCoord > rightCoord) {
-      return 1;
-    }
-  }
-
-  if (depth < right.depth) {
-    return -1;
-  }
-
-  if (depth > right.depth) {
-    return 1;
-  }
-
-  return 0;
-}
-
-function prefixNestedCoords(
-  position: PreparedFuguePath,
-  depth: number,
-): readonly number[] {
-  if (depth === 0) {
-    return [];
-  }
-
-  if (depth < position.depth) {
-    return position.nestedCoords.slice(0, depth);
-  }
-
-  return [...position.nestedCoords, position.finalCoord];
-}
-
-export class FugueBurst {
-  private readonly prefixTopCoord: bigint;
-  private readonly prefixNestedCoords: readonly number[];
-  private readonly prefixBursts: readonly number[];
-  private readonly continuationBurst: number;
-  private readonly prefix: string;
-  private readonly prefixStem: string;
-  private readonly rememberPosition: RememberPreparedPosition | undefined;
-
-  private currentNestedCoords: number[] | null = null;
-  private currentBursts: number[] | null = null;
-  private currentFinalCoord: number | null = null;
-  private currentStem: string | null = null;
-
-  constructor(
-    prefixCoords: readonly bigint[],
-    prefixBursts: readonly bigint[],
-    rememberPosition?: RememberPreparedPosition,
-    preparedPrefix?: PreparedBurstPrefix,
-  ) {
-    if (preparedPrefix === undefined) {
-      if (prefixCoords.length !== prefixBursts.length) {
-        throw new InvalidPositionError(
-          `burst prefixes must satisfy coords.length = bursts.length, got ${prefixCoords.length} coords and ${prefixBursts.length} bursts`,
-        );
-      }
-
-      if (prefixBursts.length === 0) {
-        throw new InvalidPositionError(
-          "burst prefixes must contain at least 1 burst token",
-        );
-      }
-
-      if (prefixBursts.length > MAX_BURST_DEPTH) {
-        throw new InvalidPositionError(
-          `burst depth must be <= ${MAX_BURST_DEPTH}, got ${prefixBursts.length}`,
-        );
-      }
-
-      const prepared = toPreparedBurstPrefix(prefixCoords, prefixBursts);
-      this.prefixTopCoord = prepared.topCoord;
-      this.prefixNestedCoords = prepared.nestedCoords;
-      this.prefixBursts = prepared.bursts;
-      this.continuationBurst = prepared.bursts[prepared.bursts.length - 1]!;
-      this.prefixStem = formatPreparedPrefixStem(prepared);
-      this.prefix = this.prefixStem.slice(0, -SEPARATOR.length);
-      this.rememberPosition = rememberPosition;
-      return;
-    }
-
-    this.prefixTopCoord = preparedPrefix.topCoord;
-    this.prefixNestedCoords = preparedPrefix.nestedCoords;
-    this.prefixBursts = preparedPrefix.bursts;
-    this.continuationBurst =
-      preparedPrefix.bursts[preparedPrefix.bursts.length - 1]!;
-    this.prefixStem = formatPreparedPrefixStem(preparedPrefix);
-    this.prefix = this.prefixStem.slice(0, -SEPARATOR.length);
-    this.rememberPosition = rememberPosition;
-  }
-
-  static fromPreparedPrefix(
-    prefix: PreparedBurstPrefix,
-    rememberPosition?: RememberPreparedPosition,
-  ) {
-    return new FugueBurst([prefix.topCoord], [1n], rememberPosition, prefix);
-  }
-
-  next(): FuguePosition {
-    if (this.currentNestedCoords === null || this.currentBursts === null) {
-      this.currentBursts = cloneNumberPath(this.prefixBursts);
-      this.currentNestedCoords = cloneNumberPath(this.prefixNestedCoords);
-      this.currentFinalCoord = NESTED_COORD_MID_NUMBER;
-      this.currentStem = this.prefixStem;
-      return this.emitCurrentPosition();
-    }
-
-    const currentFinalCoord = this.currentFinalCoord!;
-    if (this.currentStem === null) {
-      this.currentStem = stemFromCurrentPosition(
-        this.prefixTopCoord,
-        this.currentBursts,
-        this.currentNestedCoords,
-      );
-    }
-    const nextCoord = nextSequentialNestedCoordAfter(currentFinalCoord);
-
-    if (nextCoord !== null) {
-      this.currentFinalCoord = nextCoord;
-      return this.emitCurrentPosition();
-    }
-
-    if (this.currentBursts.length >= MAX_BURST_DEPTH) {
-      throw new CoordSpaceExhaustedError(
-        `Cannot continue burst ${this.prefix}: burst depth exceeds ${MAX_BURST_DEPTH}`,
-      );
-    }
-
-    const previousFinalCoord = currentFinalCoord;
-    const previousDepth = this.currentBursts.length;
-    this.currentStem += `${encode62Number(previousFinalCoord, coordWidthAtDepth(previousDepth))}${SEPARATOR}${encode62Number(this.continuationBurst, burstWidthAtDepth(previousDepth))}${SEPARATOR}`;
-    this.currentNestedCoords.push(previousFinalCoord);
-    this.currentBursts.push(this.continuationBurst);
-    this.currentFinalCoord = NESTED_COORD_MID_NUMBER;
-    return this.emitCurrentPosition();
-  }
-
-  private emitCurrentPosition() {
-    const currentNestedCoords = this.currentNestedCoords!;
-    const currentBursts = this.currentBursts!;
-    const text =
-      `${this.currentStem!}${encode62Number(this.currentFinalCoord!, coordWidthAtDepth(currentBursts.length))}` as FuguePosition;
-
-    if (this.rememberPosition === undefined) {
-      return text;
-    }
-
-    this.rememberPosition({
-      topCoord: this.prefixTopCoord,
-      bursts: currentBursts,
-      nestedCoords: currentNestedCoords,
-      finalCoord: this.currentFinalCoord!,
-      depth: currentBursts.length,
-      text,
-    });
-    return text;
-  }
 }
 
 export class Fugue {
@@ -484,7 +70,6 @@ export class Fugue {
 
   constructor(options: FugueOptions = {}) {
     this.allowInsecureRandom = options.allowInsecureRandom ?? false;
-
     this.randomBytes =
       options.randomBytes ??
       ((byteLength: number) => {
@@ -526,7 +111,8 @@ export class Fugue {
 
       const fallback = midpointPositionAtSameDepth(preparedLeft, preparedRight);
       if (fallback !== null) {
-        return this.rememberPreparedPosition(fallback).text;
+        return this.rememberPreparedPosition(fallback as PreparedFuguePosition)
+          .text;
       }
 
       throw error;
@@ -542,11 +128,11 @@ export class Fugue {
   }
 
   startBurstAfter(position: FuguePosition): FugueBurst {
-    return this.startBurstAfterPrepared(this.preparePosition(position));
+    return this.startBurstAfterPrepared(this.prepareCachedPosition(position));
   }
 
   startBurstBefore(position: FuguePosition): FugueBurst {
-    return this.startBurstBeforePrepared(this.preparePosition(position));
+    return this.startBurstBeforePrepared(this.prepareCachedPosition(position));
   }
 
   private startBurstFromPreparedBounds(
@@ -554,11 +140,9 @@ export class Fugue {
     preparedRight: PreparedFuguePosition | null,
   ) {
     if (preparedLeft === null && preparedRight === null) {
-      return FugueBurst.fromPreparedPrefix({
-        topCoord: TOP_COORD_MID,
-        bursts: [this.randomBurstToken(0)],
-        nestedCoords: [],
-      });
+      return FugueBurst.fromPreparedPrefix(
+        createRootBurstPrefix(this.randomBurstToken(0)),
+      );
     }
 
     if (preparedLeft !== null && preparedRight === null) {
@@ -569,29 +153,24 @@ export class Fugue {
       return this.startBurstBeforePrepared(preparedRight);
     }
 
-    if (
-      preparedRight !== null &&
-      isPreparedPositionPrefix(preparedLeft!, preparedRight)
-    ) {
-      const shallower = this.tryStartWithinPrefixGap(
+    if (isPreparedPositionPrefix(preparedLeft!, preparedRight!)) {
+      const withinPrefixGap = this.tryStartWithinPrefixGap(
         preparedLeft!,
-        preparedRight,
+        preparedRight!,
       );
-      if (shallower !== null) {
-        return shallower;
+      if (withinPrefixGap !== null) {
+        return withinPrefixGap;
       }
 
-      return this.startBurstFromLeftAncestor(preparedRight);
+      return this.startBurstFromLeftAncestor(preparedRight!);
     }
 
-    if (preparedRight !== null) {
-      const shallower = this.tryStartAfterLeftWithinGap(
-        preparedLeft!,
-        preparedRight,
-      );
-      if (shallower !== null) {
-        return shallower;
-      }
+    const withinSharedGap = this.tryStartAfterLeftWithinGap(
+      preparedLeft!,
+      preparedRight!,
+    );
+    if (withinSharedGap !== null) {
+      return withinSharedGap;
     }
 
     return this.startBurstFromAncestor(preparedLeft!);
@@ -639,7 +218,7 @@ export class Fugue {
     return FugueBurst.fromPreparedPrefix({
       topCoord: position.topCoord,
       bursts,
-      nestedCoords: prefixNestedCoords(position, depth),
+      nestedCoords: nestedCoordsForBurstDepth(position, depth),
     });
   }
 
@@ -653,20 +232,25 @@ export class Fugue {
   ) {
     for (let depth = 0; depth <= left.depth; depth++) {
       if (depth === left.depth) {
-        if (comparePreparedPrefixAtDepth(left, depth, right) < 0) {
+        if (comparePreparedPathSlices(left, depth, right) < 0) {
           return this.startBurstFromPositionAtDepth(left, depth);
         }
         continue;
       }
 
-      const upper = this.maxBurstBeforeRightAtDepth(left, depth, right);
-      if (upper === null) {
+      const maxBurst = this.maxBurstBeforeRightAtDepth(left, depth, right);
+      if (maxBurst === null) {
         continue;
       }
 
-      const lower = left.bursts[depth]!;
-      if (lower < upper) {
-        return this.startBurstFromPositionAtDepth(left, depth, lower, upper);
+      const minBurst = left.bursts[depth]!;
+      if (minBurst < maxBurst) {
+        return this.startBurstFromPositionAtDepth(
+          left,
+          depth,
+          minBurst,
+          maxBurst,
+        );
       }
     }
 
@@ -677,14 +261,18 @@ export class Fugue {
     left: PreparedFuguePosition,
     right: PreparedFuguePosition,
   ) {
-    const depth = left.depth;
-    const upper = this.maxBurstBeforeRight(left, depth, right);
+    const maxBurst = this.maxBurstBeforeRight(left, left.depth, right);
 
-    if (upper === null || upper < 0) {
+    if (maxBurst === null || maxBurst < 0) {
       return null;
     }
 
-    return this.startBurstFromPositionAtDepth(left, depth, undefined, upper);
+    return this.startBurstFromPositionAtDepth(
+      left,
+      left.depth,
+      undefined,
+      maxBurst,
+    );
   }
 
   private maxBurstBeforeRight(
@@ -713,7 +301,7 @@ export class Fugue {
     depth: number,
     right: PreparedFuguePosition,
   ) {
-    if (isPreparedPrefixAtDepth(position, depth, right)) {
+    if (isPreparedPathPrefix(position, depth, right)) {
       const rightBurst = right.bursts[depth];
       if (rightBurst === undefined) {
         return null;
@@ -722,7 +310,7 @@ export class Fugue {
       return rightBurst - 1;
     }
 
-    if (comparePreparedPrefixAtDepth(position, depth, right) < 0) {
+    if (comparePreparedPathSlices(position, depth, right) < 0) {
       return burstMaxNumberAtDepth(depth);
     }
 
@@ -730,36 +318,21 @@ export class Fugue {
   }
 
   private chooseBurstToken(minInclusive: number, maxInclusive: number) {
-    if (maxInclusive < minInclusive) {
-      throw new InvalidRandomSourceError(
-        `Invalid random interval [${minInclusive}, ${maxInclusive}]`,
-      );
-    }
-
-    const span = maxInclusive - minInclusive;
-    if (span < 4) {
-      return this.randomBetweenNumber(minInclusive, maxInclusive);
-    }
-
-    const slack = Math.floor(span / 4);
-    const innerMin = minInclusive + slack;
-    const innerMax = maxInclusive - slack;
-
-    return this.randomBetweenNumber(innerMin, innerMax);
+    return chooseBurstToken(
+      (innerMin, innerMax) => {
+        return this.randomBetweenNumber(innerMin, innerMax);
+      },
+      minInclusive,
+      maxInclusive,
+    );
   }
 
   private startBurstAfterPrepared(position: PreparedFuguePosition) {
-    const nextTopCoord = nextSequentialTopCoordAfter(
-      position.topCoord,
-      TOP_COORD_MAX_RIGHT,
-    );
-
+    const nextTopCoord = nextSequentialTopCoordAfter(position.topCoord);
     if (nextTopCoord !== null) {
-      return FugueBurst.fromPreparedPrefix({
-        topCoord: nextTopCoord,
-        bursts: [this.randomBurstToken(0)],
-        nestedCoords: [],
-      });
+      return FugueBurst.fromPreparedPrefix(
+        createFlatBurstPrefix(nextTopCoord, this.randomBurstToken(0)),
+      );
     }
 
     if (position.depth < MAX_BURST_DEPTH) {
@@ -780,13 +353,10 @@ export class Fugue {
 
   private startBurstBeforePrepared(position: PreparedFuguePosition) {
     const previousTopCoord = nextSequentialTopCoordBefore(position.topCoord);
-
     if (previousTopCoord !== null) {
-      return FugueBurst.fromPreparedPrefix({
-        topCoord: previousTopCoord,
-        bursts: [this.randomBurstToken(0)],
-        nestedCoords: [],
-      });
+      return FugueBurst.fromPreparedPrefix(
+        createFlatBurstPrefix(previousTopCoord, this.randomBurstToken(0)),
+      );
     }
 
     if (position.depth < MAX_BURST_DEPTH) {
@@ -814,11 +384,12 @@ export class Fugue {
       return null;
     }
 
-    return FugueBurst.fromPreparedPrefix({
-      topCoord,
-      bursts: [this.chooseBurstToken(minBurstInclusive, maxBurstInclusive)],
-      nestedCoords: [],
-    });
+    return FugueBurst.fromPreparedPrefix(
+      createFlatBurstPrefix(
+        topCoord,
+        this.chooseBurstToken(minBurstInclusive, maxBurstInclusive),
+      ),
+    );
   }
 
   private prepareBounds(
@@ -848,13 +419,13 @@ export class Fugue {
       return null;
     }
 
-    return this.preparePosition(value);
+    return this.prepareCachedPosition(value);
   }
 
-  private preparePosition(value: FuguePosition) {
+  private prepareCachedPosition(value: FuguePosition) {
     const cached = this.preparedCache.get(value);
     if (cached !== null) {
-      return cached;
+      return cached as PreparedFuguePosition;
     }
 
     return this.rememberPreparedPosition(preparePosition(value));
@@ -863,7 +434,7 @@ export class Fugue {
   private readonly rememberPreparedPosition = (
     position: PreparedFuguePosition,
   ) => {
-    return this.preparedCache.set(position);
+    return this.preparedCache.set(position) as PreparedFuguePosition;
   };
 
   private randomBurstToken(depth: number) {
@@ -871,78 +442,11 @@ export class Fugue {
   }
 
   private randomBelow(limit: bigint) {
-    if (limit <= 0n) {
-      throw new InvalidRandomSourceError(`limit must be > 0, got ${limit}`);
-    }
-
-    if (limit === 1n) {
-      return 0n;
-    }
-
-    const bits = bitLength(limit - 1n);
-    const byteLength = Math.ceil(bits / 8);
-    const extraBits = byteLength * 8 - bits;
-    const mask = 0xff >>> extraBits;
-
-    for (let attempt = 0; attempt < MAX_RANDOM_REJECTION_ATTEMPTS; attempt++) {
-      const bytes = this.randomBytes(byteLength);
-      if (bytes.length !== byteLength) {
-        throw new InvalidRandomSourceError(
-          `randomBytes must return exactly ${byteLength} bytes, got ${bytes.length}`,
-        );
-      }
-
-      const sample = bytes.slice();
-      sample[0] = sample[0]! & mask;
-      const value = bytesToBigInt(sample);
-
-      if (value < limit) {
-        return value;
-      }
-    }
-
-    throw new InvalidRandomSourceError(
-      `randomBytes failed to produce a sample < ${limit} after ${MAX_RANDOM_REJECTION_ATTEMPTS} attempts`,
-    );
+    return randomBelow(this.randomBytes, limit);
   }
 
   private randomBelowNumber(limit: number) {
-    if (!Number.isSafeInteger(limit) || limit <= 0) {
-      throw new InvalidRandomSourceError(
-        `limit must be a safe integer > 0, got ${limit}`,
-      );
-    }
-
-    if (limit === 1) {
-      return 0;
-    }
-
-    const bits = bitLengthNumber(limit - 1);
-    const byteLength = Math.ceil(bits / 8);
-    const extraBits = byteLength * 8 - bits;
-    const mask = 0xff >>> extraBits;
-
-    for (let attempt = 0; attempt < MAX_RANDOM_REJECTION_ATTEMPTS; attempt++) {
-      const bytes = this.randomBytes(byteLength);
-      if (bytes.length !== byteLength) {
-        throw new InvalidRandomSourceError(
-          `randomBytes must return exactly ${byteLength} bytes, got ${bytes.length}`,
-        );
-      }
-
-      let value = bytes[0]! & mask;
-      for (let index = 1; index < byteLength; index++) {
-        value = value * 256 + bytes[index]!;
-      }
-
-      if (value < limit) {
-        return value;
-      }
-    }
-
-    throw new InvalidRandomSourceError(
-      `randomBytes failed to produce a sample < ${limit} after ${MAX_RANDOM_REJECTION_ATTEMPTS} attempts`,
-    );
+    return randomBelowNumber(this.randomBytes, limit);
   }
 
   randomBetween(minInclusive: bigint, maxInclusive: bigint) {
@@ -970,33 +474,6 @@ export class Fugue {
   }
 
   private defaultRandomBytes(byteLength: number): Uint8Array {
-    if (byteLength <= 0) {
-      throw new InvalidRandomSourceError(
-        `byteLength must be > 0, got ${byteLength}`,
-      );
-    }
-
-    const cryptoObject = globalThis?.crypto;
-    if (
-      cryptoObject !== undefined &&
-      "getRandomValues" in cryptoObject &&
-      cryptoObject.getRandomValues !== undefined
-    ) {
-      const bytes = new Uint8Array(byteLength);
-      cryptoObject.getRandomValues(bytes);
-      return bytes;
-    }
-
-    if (this.allowInsecureRandom) {
-      const bytes = new Uint8Array(byteLength);
-      for (let index = 0; index < byteLength; index++) {
-        bytes[index] = Math.floor(Math.random() * 256);
-      }
-      return bytes;
-    }
-
-    throw new SecureRandomUnavailableError(
-      "No secure random source found. Provide options.randomBytes, enable globalThis.crypto.getRandomValues, or set allowInsecureRandom: true.",
-    );
+    return defaultRandomBytes(byteLength, this.allowInsecureRandom);
   }
 }
