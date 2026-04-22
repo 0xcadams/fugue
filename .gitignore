@@ -2,3 +2,5 @@ dist/
 node_modules/
 coverage/
 .DS_Store
+benchmarks/.cache/
+benchmarks/reports/
