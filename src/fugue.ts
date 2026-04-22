@@ -210,10 +210,12 @@ export class Fugue {
       return this.startBurstBeforeParsed(parsedRight);
     }
 
-    if (
-      parsedRight !== null &&
-      (parsedLeft === null || isPositionPrefix(parsedLeft, parsedRight))
-    ) {
+    if (parsedRight !== null && isPositionPrefix(parsedLeft!, parsedRight)) {
+      const shallower = this.tryStartWithinPrefixGap(parsedLeft!, parsedRight);
+      if (shallower !== null) {
+        return shallower;
+      }
+
       return this.startBurstFromAncestor(toLeftAncestor(parsedRight));
     }
 
@@ -292,6 +294,20 @@ export class Fugue {
     }
 
     return null;
+  }
+
+  private tryStartWithinPrefixGap(
+    left: ParsedFuguePosition,
+    right: ParsedFuguePosition,
+  ) {
+    const depth = left.bursts.length;
+    const upper = this.maxBurstBeforeRight(left, depth, right);
+
+    if (upper === null || upper < 0n) {
+      return null;
+    }
+
+    return this.startBurstFromAncestor(left, undefined, upper);
   }
 
   private maxBurstBeforeRight(

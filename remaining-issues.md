@@ -2,6 +2,14 @@
 
 This file tracks the remaining high-confidence false-exhaustion bugs in the current v3 allocator.
 
+## Current status
+
+- The current `startBurst(...)` allocator now searches shallower shared ancestors and bounded sibling burst space before falling back to a fresh descendant burst.
+- That change materially improved the measured middle-gap story in `reports/main-v3-comparison.json`: random middle inserts rose from `25,295` to `77,937` ops/sec, validation rose from `240,731` to `549,364` ops/sec, and sorting rose from `2,379,631` to `5,512,740` ops/sec versus the previous local `v3` run.
+- Key growth is also much healthier: random-middle keys dropped from avg length `255.12` to `72.61`, and the mixed validation dataset dropped from avg length `107.48` to `46.51`.
+- The remaining bugs are now narrower than before. They are mostly correctness gaps at max depth and boundary conditions, not the broad middle-gap regression that existed before this allocator pass.
+- The full `benchmarks/` suite has not yet been rerun against this exact worktree, so the published edit trace failure status is still not revalidated here.
+
 ## Already Fixed
 
 ### Repeated `after()` / `before()` edge inserts growing depth
@@ -12,19 +20,27 @@ Previously, repeated one-off inserts at the list edges (`first()` + repeated `af
 
 The current unstaged changes fix that by advancing the top coord first, and the new tests verify that repeated edge inserts stay flat at burst depth 1.
 
+### Shallower middle-gap burst reuse
+
+This regression is also now partially fixed locally.
+
+Previously, `startBurst(left, right)` usually solved arbitrary middle inserts by opening a fresh descendant burst under `left` or `toLeftAncestor(right)`, so repeated middle edits caused deep recursive growth and very large keys.
+
+The current allocator now tries shallower shared ancestors first and reuses sibling burst space when it exists. That does not solve every max-depth case, but it dramatically reduces key growth and throughput loss in the measured middle-gap benchmarks.
+
 ---
 
-## Remaining Issue 1: `between(left, right)` false exhaustion at max depth
+## Remaining Issue 1: `between(left, right)` same-depth fallback at max depth
 
 ### Summary
 
-`between(left, right)` can still throw `BurstSpaceExhaustedError` even when a valid one-off key still exists between the two bounds.
+After the current shallower allocator pass, `between(left, right)` can still throw `BurstSpaceExhaustedError` even when a valid one-off key still exists between the two bounds.
 
 ### Affected code
 
-- `src/fugue.ts:181`
-- `src/fugue.ts:188`
-- `src/fugue.ts:235`
+- `src/fugue.ts` `between(...)`
+- `src/fugue.ts` `startBurst(...)`
+- `src/fugue.ts` `startBurstFromAncestor(...)`
 
 ### What happens
 
@@ -32,18 +48,19 @@ The current unstaged changes fix that by advancing the top coord first, and the 
 
 1. parse the bounds
 2. call `startBurst(left, right)`
-3. open a fresh descendant burst under `left` or `toLeftAncestor(right)`
-4. call `.next()`
+3. try shallower shared ancestors and sibling burst space
+4. if none exists, try to open a fresh descendant burst
+5. call `.next()`
 
-That means it always tries to solve the gap by opening a new nested burst.
+That means it still always tries to solve the gap by returning a real burst handle.
 
-If the chosen ancestor is already at `MAX_BURST_DEPTH`, `startBurstFromAncestor(...)` throws immediately.
+If no new burst can be opened because the relevant ancestor is already at `MAX_BURST_DEPTH`, `startBurstFromAncestor(...)` still throws.
 
 ### Why this is a bug
 
-This is a false exhaustion result.
+This is now a narrower false exhaustion result.
 
-There are cases where a valid same-depth key still exists between `left` and `right`, but the allocator throws because it only tried the nested-burst strategy.
+There are cases where a valid same-depth key still exists between `left` and `right`, but the allocator throws because `between(...)` has no direct one-off fallback once all burst-opening strategies are exhausted.
 
 Example shape:
 
@@ -62,9 +79,10 @@ If the shared prefix is already at depth 64, the current code still throws inste
 
 ### When this occurs
 
-This issue occurs when all of the following are true:
+This issue now occurs when all of the following are true:
 
 - `left` and `right` are both non-null
+- the allocator cannot reuse a shallower ancestor or sibling burst interval
 - they already sit at `MAX_BURST_DEPTH`
 - they share the same full path except for the final coord
 - there is still an odd coord strictly between the two final coords
@@ -109,13 +127,13 @@ Add tests that cover:
 
 ### Affected code
 
-- `src/fugue.ts:208`
-- `src/fugue.ts:222`
-- `src/fugue.ts:235`
+- `src/fugue.ts` `startBurstAfterParsed(...)`
+- `src/fugue.ts` `startBurstBeforeParsed(...)`
+- `src/fugue.ts` `startBurstFromAncestor(...)`
 
 ### What happens
 
-The current edge helpers now do this:
+The current edge helpers still do this:
 
 - `after(position)`:
   1. try the next top coord
@@ -185,13 +203,14 @@ Add tests that cover:
 
 ### Note on current tests
 
-The current local test around `tests/fugue.test.ts:235` still encodes the old false-exhaustion behavior by expecting failure as soon as top-coord space is exhausted. That expectation should be narrowed so it only expects failure when same-top-coord top-burst space is exhausted too.
+The current local test named `startBurstAfter exhausts once top-level space is exhausted` in `tests/fugue.test.ts` still encodes the old false-exhaustion behavior by expecting failure as soon as top-coord space is exhausted. That expectation should be narrowed so it only expects failure when same-top-coord top-burst space is exhausted too.
 
 ---
 
 ## Suggested Priority
 
-1. Fix `between(left, right)` false exhaustion first
-2. Fix `after()` / `before()` boundary false exhaustion second
+1. Fix `between(left, right)` max-depth one-off fallback first
+2. Fix `after()` / `before()` same-top-coord boundary fallback second
+3. Re-run the full `benchmarks/` suite and refresh the docs after those fallbacks land
 
 The first issue is the more direct public-API correctness problem for one-off inserts inside an existing deep gap. The second issue is rarer and mostly affects extreme boundary cases.

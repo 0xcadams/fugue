@@ -1,6 +1,6 @@
 # main vs v3 comparison
 
-Generated with `pnpm compare:branches` using `scripts/compare-branches.mjs` after stage 2 (`7 / 7` burst widths).
+Generated with `pnpm compare:branches` using `scripts/compare-branches.mjs` after the shallower middle-gap allocator pass on top of stage 2 (`7 / 7` burst widths).
 Raw data lives in `reports/main-v3-comparison.json`.
 
 ## Scope
@@ -13,19 +13,19 @@ Raw data lives in `reports/main-v3-comparison.json`.
 
 - Stage 1 fixed edge `between(...)` so edge inserts now stay flat and fast.
 - Stage 2 fixed the measured same-gap collision regression in the deterministic 100k stress harness by moving burst ids to `7 / 7` width.
-- `v3` still wins on flat-edge workloads, bundle size, and public API size.
-- `v3` still loses badly on generic middle `between(...)` workloads: repeated middle inserts are slower and keys grow much more than `main`.
-- `v3` is much safer than before, but it is still not clearly better than `main` as a general-purpose ordering-key library until middle-gap allocation improves.
+- The current shallower middle-gap allocator materially improves arbitrary middle inserts by reusing shared ancestors and sibling burst space before opening a fresh descendant burst.
+- `v3` still wins on flat-edge workloads, bundle size, and public API size, and it is now effectively at parity on validation throughput.
+- `v3` is still behind `main` on generic middle inserts and slightly behind on sorting, and the remaining max-depth and boundary fallback bugs are still open.
 
 ## Health checks
 
-| Metric          |                                   main |                           v3 | Notes                                                 |
-| --------------- | -------------------------------------: | ---------------------------: | ----------------------------------------------------- |
-| Tests           |                              68 passed |                    74 passed | `v3` adds edge-path and collision regression coverage |
-| Coverage        |             100% stmts / 99.19% branch | 97.25% stmts / 95.07% branch | `main` still has the tighter correctness net          |
-| `pnpm build`    |                                   pass |                         pass | `v3` is still smaller                                 |
-| `pnpm size`     |                                2.84 kB |                      2.33 kB | `v3` remains about 18% smaller                        |
-| Install hygiene | needed `--no-frozen-lockfile` fallback |                        clean | `main` lockfile is out of sync                        |
+| Metric          |                                   main |                          v3 | Notes                                                |
+| --------------- | -------------------------------------: | --------------------------: | ---------------------------------------------------- |
+| Tests           |                              68 passed |                   78 passed | `v3` adds shallower-middle-gap regression coverage   |
+| Coverage        |             100% stmts / 99.19% branch | 95.9% stmts / 93.72% branch | `main` still has the tighter correctness net         |
+| `pnpm build`    |                                   pass |                        pass | `v3` builds cleanly, but the output is a bit larger  |
+| `pnpm size`     |                                2.84 kB |                      2.6 kB | `v3` remains smaller, but regressed vs the prior run |
+| Install hygiene | needed `--no-frozen-lockfile` fallback |                       clean | `main` lockfile is out of sync                       |
 
 ## Speed
 
@@ -33,40 +33,41 @@ Ops/sec from `reports/main-v3-comparison.json`:
 
 | Workload                       |      main |        v3 |  Delta |
 | ------------------------------ | --------: | --------: | -----: |
-| empty doc insert               |   305,030 |   345,939 | +13.4% |
-| `after()` chain                |   166,347 |   270,824 | +62.8% |
-| `between(left, null)` chain    |   164,109 |   285,828 | +74.2% |
-| `before()` chain               |   220,606 |   289,624 | +31.3% |
-| `between(null, right)` chain   |   230,134 |   289,195 | +25.7% |
-| random middle inserts          |   126,755 |    25,295 | -80.0% |
-| explicit burst/run growth      |   577,060 |   561,105 |  -2.8% |
-| concurrent same-gap sequences  |   566,467 |   554,055 |  -2.2% |
-| validation (`isFuguePosition`) |   555,284 |   240,731 | -56.6% |
-| sorting                        | 7,882,079 | 2,379,631 | -69.8% |
+| empty doc insert               |   291,820 |   393,446 | +34.8% |
+| `after()` chain                |   171,869 |   270,425 | +57.3% |
+| `between(left, null)` chain    |   175,249 |   284,016 | +62.1% |
+| `before()` chain               |   216,231 |   281,099 | +30.0% |
+| `between(null, right)` chain   |   227,542 |   279,477 | +22.8% |
+| random middle inserts          |   139,105 |    77,937 | -44.0% |
+| explicit burst/run growth      |   603,846 |   554,641 |  -8.1% |
+| concurrent same-gap sequences  |   604,972 |   538,733 | -10.9% |
+| validation (`isFuguePosition`) |   545,514 |   549,364 |  +0.7% |
+| sorting                        | 6,112,122 | 5,512,740 |  -9.8% |
 
 Takeaways:
 
 - `v3` still wins every measured edge workload.
-- Stage 2 slightly reduced flat-edge speed versus the `6 / 5` version, but `v3` still stays ahead of `main` there.
-- The main remaining problem is unchanged: once `v3` starts nesting in arbitrary middle gaps, performance and key length degrade quickly.
+- The new allocator pass makes random middle inserts much healthier: `v3` is still slower than `main`, but the gap is now moderate instead of catastrophic.
+- Shorter middle-gap keys also pull validation throughput up to parity and bring sorting much closer to `main`.
+- The remaining performance risk is now concentrated in deep arbitrary middle gaps and the still-open max-depth and boundary fallback cases.
 
 ## Key length and growth
 
-| Scenario                                         | main           | v3                                    |
-| ------------------------------------------------ | -------------- | ------------------------------------- |
-| Empty doc / `after()` / `before()`               | fixed 41 chars | fixed 26 chars                        |
-| Edge `between(..., null)` / `between(null, ...)` | fixed 41 chars | fixed 26 chars                        |
-| Explicit burst/run                               | fixed 41 chars | fixed 41 chars                        |
-| Random middle inserts                            | fixed 41 chars | avg 255.12, p50 251, p95 341, max 446 |
-| Mixed validation dataset                         | fixed 41 chars | avg 107.48, p50 26, p95 326, max 461  |
+| Scenario                                         | main           | v3                                  |
+| ------------------------------------------------ | -------------- | ----------------------------------- |
+| Empty doc / `after()` / `before()`               | fixed 41 chars | fixed 26 chars                      |
+| Edge `between(..., null)` / `between(null, ...)` | fixed 41 chars | fixed 26 chars                      |
+| Explicit burst/run                               | fixed 41 chars | fixed 41 chars                      |
+| Random middle inserts                            | fixed 41 chars | avg 72.61, p50 56, p95 116, max 236 |
+| Mixed validation dataset                         | fixed 41 chars | avg 46.51, p50 26, p95 116, max 176 |
 
 Critical finding:
 
 - `7 / 7` keeps flat keys compact enough while giving burst identity the same width at every depth.
-- The collision fix increased flat keys by only one char (`25 -> 26`) and explicit nested burst keys by three chars (`38 -> 41`).
-- The remaining growth problem is still concentrated in arbitrary middle inserts, where `v3` expands into deep recursive paths much earlier than `main`.
+- The current shallower allocator materially cuts middle-gap growth, which is why validation and sorting recovered so much in this run.
+- `v3` still expands more than `main` on arbitrary middle inserts, but it no longer blows up nearly as early as the earlier stage-2 build.
 
-That means the next algorithm pass should focus on shallower middle-gap allocation rather than more burst-token changes.
+That means the next algorithm pass should finish the remaining max-depth and edge-boundary fallbacks rather than spend more time on burst-token changes.
 
 ## Collision behavior
 
@@ -97,7 +98,7 @@ This is the biggest stage 2 improvement:
 
 - The API is now more specialized. `main` exposes sentinels, parsing helpers, codec helpers, and tuning knobs in `/tmp/fugue-main-compare/src/index.ts:1`; `v3` hides most of that.
 - `main` documents common list operations and sentinel bounds directly in `/tmp/fugue-main-compare/README.md:54` and `/tmp/fugue-main-compare/README.md:67`; `v3` is more text-editor-centric.
-- Middle-gap behavior is still much less predictable than `main` for general list users.
+- Middle-gap behavior is much healthier than before, but it is still less predictable than `main` for general list users.
 - `v3` still relies on a non-obvious hidden left/right coord model in `algorithm.md:36`, so the prose is clearer than the implementation model, but not actually simpler.
 
 ## Library-level metrics
@@ -105,10 +106,10 @@ This is the biggest stage 2 improvement:
 | Metric            |     main |       v3 |  Delta |
 | ----------------- | -------: | -------: | -----: |
 | Runtime exports   |       26 |        9 | -65.4% |
-| Built ESM size    | 19,546 B | 16,225 B | -17.0% |
-| Size-limit result |  2.84 kB |  2.33 kB | -18.0% |
+| Built ESM size    | 19,546 B | 18,950 B |  -3.0% |
+| Size-limit result |  2.84 kB |   2.6 kB |  -8.5% |
 
-This is still a real win for `v3`: the package stays smaller and the public surface stays easier to scan.
+This is still a real win for `v3`: the package stays smaller and the public surface stays easier to scan, even though the latest allocator work increased size a bit versus the prior `v3` report.
 
 ## Recommendation
 
@@ -120,7 +121,8 @@ Why:
 
 - stable 41-char keys in every measured workload
 - much better arbitrary `between(...)` performance
-- much better sort and validation throughput once datasets include many middle inserts
+- slightly better sorting throughput
+- simpler behavior once datasets include lots of arbitrary middle inserts
 
 ### For a burst-oriented collaborative text library
 
@@ -130,16 +132,19 @@ Why:
 
 - edge-path behavior is fixed
 - same-gap collision behavior is materially safer in the measured harness
+- arbitrary middle inserts are far less pathological than before
+- validation throughput is now effectively at parity with `main`
 - flat edge ops are faster and shorter
 - explicit bursts remain competitive on speed
 
-The remaining blocker is middle-gap growth, not burst identity.
+The remaining blockers are the max-depth one-off fallback, the edge-boundary fallback, and the residual middle-gap gap to `main`.
 
 ## Highest-priority fixes for v3
 
-1. Add a shallower allocator for arbitrary middle-gap `between(...)` calls before falling back to nested bursts.
-2. Keep the new collision and edge-path regression coverage in place.
-3. Re-run `pnpm compare:branches` after the middle-gap allocator lands.
+1. Add the missing same-depth one-off fallback for `between(left, right)` at max depth.
+2. Extend `after()` / `before()` so they search remaining same-top-coord top-burst space before reporting exhaustion.
+3. Keep the new collision, edge-path, and shallower-middle-gap regression coverage in place.
+4. Re-run `pnpm compare:branches` and the full `benchmarks/` suite after those fallbacks land.
 
 ## Artifacts
 

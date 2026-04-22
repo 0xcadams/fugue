@@ -198,6 +198,86 @@ describe("fugue", () => {
     expect(parsedInserted.coords[0]).toBe(parsedC.coords[0]);
   });
 
+  test("startBurst can open directly under a prefix left bound when child burst space exists", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(24) });
+    const left = formatPosition({
+      coords: [TOP_COORD_MID, NESTED_COORD_MID],
+      bursts: [11n],
+    });
+    const right = formatPosition({
+      coords: [TOP_COORD_MID, NESTED_COORD_MID, NESTED_COORD_MID],
+      bursts: [11n, 40n],
+    });
+
+    const inserted = fugue.startBurst(left, right).next();
+    const parsedInserted = parsePosition(inserted);
+
+    expect(left < inserted).toBe(true);
+    expect(inserted < right).toBe(true);
+    expect(parsedInserted.bursts).toHaveLength(2);
+    expect(parsedInserted.bursts[0]).toBe(11n);
+    expect(parsedInserted.bursts[1]).toBeLessThan(40n);
+  });
+
+  test("startBurst falls back when a prefix gap has no child burst room", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(25) });
+    const left = formatPosition({
+      coords: [TOP_COORD_MID, NESTED_COORD_MID],
+      bursts: [11n],
+    });
+    const right = formatPosition({
+      coords: [TOP_COORD_MID, NESTED_COORD_MID, NESTED_COORD_MID],
+      bursts: [11n, 0n],
+    });
+
+    const inserted = fugue.startBurst(left, right).next();
+    const parsedInserted = parsePosition(inserted);
+
+    expect(left < inserted).toBe(true);
+    expect(inserted < right).toBe(true);
+    expect(parsedInserted.bursts).toHaveLength(3);
+    expect(parsedInserted.bursts.slice(0, 2)).toEqual([11n, 0n]);
+  });
+
+  test("chooseBurstToken handles narrow and invalid intervals", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(26) });
+    const internal = fugue as unknown as {
+      chooseBurstToken(minInclusive: bigint, maxInclusive: bigint): bigint;
+    };
+
+    const chosen = internal.chooseBurstToken(10n, 12n);
+
+    expect(chosen >= 10n).toBe(true);
+    expect(chosen <= 12n).toBe(true);
+    expect(() => internal.chooseBurstToken(12n, 10n)).toThrow(
+      InvalidRandomSourceError,
+    );
+  });
+
+  test("maxBurstBeforeRight returns null when ancestor is not before right", () => {
+    const internal = new Fugue() as unknown as {
+      maxBurstBeforeRight(
+        ancestor: ReturnType<typeof parsePosition>,
+        depth: number,
+        right: ReturnType<typeof parsePosition>,
+      ): bigint | null;
+    };
+    const ancestor = parsePosition(
+      formatPosition({
+        coords: [TOP_COORD_MID, NESTED_COORD_MID],
+        bursts: [20n],
+      }),
+    );
+    const right = parsePosition(
+      formatPosition({
+        coords: [TOP_COORD_MID, NESTED_COORD_MID],
+        bursts: [10n],
+      }),
+    );
+
+    expect(internal.maxBurstBeforeRight(ancestor, 0, right)).toBeNull();
+  });
+
   test("startBurst can reopen a shallower middle gap when the left side is already deep", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(22) });
     const sharedBursts = [11n, 12n];
