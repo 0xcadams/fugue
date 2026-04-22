@@ -13,9 +13,11 @@ import {
 } from "../src";
 import {
   MAX_BURST_DEPTH,
+  NESTED_COORD_MAX_RIGHT_NUMBER,
   NESTED_COORD_MAX_RIGHT,
   NESTED_COORD_MID,
   NESTED_COORD_WIDTH,
+  preparePosition,
   TOP_BURST_MAX,
   TOP_BURST_WIDTH,
   TOP_COORD_MAX_RIGHT,
@@ -279,14 +281,14 @@ describe("fugue", () => {
   test("chooseBurstToken handles narrow and invalid intervals", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(26) });
     const internal = fugue as unknown as {
-      chooseBurstToken(minInclusive: bigint, maxInclusive: bigint): bigint;
+      chooseBurstToken(minInclusive: number, maxInclusive: number): number;
     };
 
-    const chosen = internal.chooseBurstToken(10n, 12n);
+    const chosen = internal.chooseBurstToken(10, 12);
 
-    expect(chosen >= 10n).toBe(true);
-    expect(chosen <= 12n).toBe(true);
-    expect(() => internal.chooseBurstToken(12n, 10n)).toThrow(
+    expect(chosen >= 10).toBe(true);
+    expect(chosen <= 12).toBe(true);
+    expect(() => internal.chooseBurstToken(12, 10)).toThrow(
       InvalidRandomSourceError,
     );
   });
@@ -294,18 +296,18 @@ describe("fugue", () => {
   test("maxBurstBeforeRight returns null when ancestor is not before right", () => {
     const internal = new Fugue() as unknown as {
       maxBurstBeforeRight(
-        ancestor: ReturnType<typeof parsePosition>,
+        ancestor: ReturnType<typeof preparePosition>,
         depth: number,
-        right: ReturnType<typeof parsePosition>,
-      ): bigint | null;
+        right: ReturnType<typeof preparePosition>,
+      ): number | null;
     };
-    const ancestor = parsePosition(
+    const ancestor = preparePosition(
       formatPosition({
         coords: [TOP_COORD_MID, NESTED_COORD_MID],
         bursts: [20n],
       }),
     );
-    const right = parsePosition(
+    const right = preparePosition(
       formatPosition({
         coords: [TOP_COORD_MID, NESTED_COORD_MID],
         bursts: [10n],
@@ -318,12 +320,12 @@ describe("fugue", () => {
   test("maxBurstBeforeRight returns null when a prefix has no next burst token", () => {
     const internal = new Fugue() as unknown as {
       maxBurstBeforeRight(
-        ancestor: ReturnType<typeof parsePosition>,
+        ancestor: ReturnType<typeof preparePosition>,
         depth: number,
-        right: ReturnType<typeof parsePosition>,
-      ): bigint | null;
+        right: ReturnType<typeof preparePosition>,
+      ): number | null;
     };
-    const right = parsePosition(
+    const right = preparePosition(
       formatPosition({
         coords: [TOP_COORD_MID, NESTED_COORD_MID],
         bursts: [10n],
@@ -336,17 +338,17 @@ describe("fugue", () => {
   test("tryStartAfterLeftWithinGap returns null for invalid internal ordering", () => {
     const internal = new Fugue() as unknown as {
       tryStartAfterLeftWithinGap(
-        left: ReturnType<typeof parsePosition>,
-        right: ReturnType<typeof parsePosition>,
+        left: ReturnType<typeof preparePosition>,
+        right: ReturnType<typeof preparePosition>,
       ): FugueBurst | null;
     };
-    const left = parsePosition(
+    const left = preparePosition(
       formatPosition({
         coords: [TOP_COORD_MID, NESTED_COORD_MID],
         bursts: [20n],
       }),
     );
-    const right = parsePosition(
+    const right = preparePosition(
       formatPosition({
         coords: [TOP_COORD_MID, NESTED_COORD_MID],
         bursts: [10n],
@@ -490,12 +492,11 @@ describe("fugue", () => {
   test("burst.next deepens under the same burst when local coord space fills", () => {
     const burst = new FugueBurst([TOP_COORD_MID], [7n]);
     const state = burst as unknown as {
-      lastPosition: { coords: bigint[]; bursts: bigint[] };
+      currentNestedCoords: number[];
+      currentBursts: number[];
     };
-    state.lastPosition = {
-      coords: [TOP_COORD_MID, NESTED_COORD_MAX_RIGHT],
-      bursts: [7n],
-    };
+    state.currentNestedCoords = [NESTED_COORD_MAX_RIGHT_NUMBER];
+    state.currentBursts = [7];
 
     const deepened = parsePosition(burst.next());
     expect(deepened.bursts).toEqual([7n, 7n]);
@@ -514,18 +515,14 @@ describe("fugue", () => {
     const prefixBursts = Array.from({ length: MAX_BURST_DEPTH }, () => 7n);
     const burst = new FugueBurst(prefixCoords, prefixBursts);
     const state = burst as unknown as {
-      lastPosition: { coords: bigint[]; bursts: bigint[] };
+      currentNestedCoords: number[];
+      currentBursts: number[];
     };
-    state.lastPosition = {
-      coords: [
-        TOP_COORD_MID,
-        ...Array.from(
-          { length: MAX_BURST_DEPTH },
-          () => NESTED_COORD_MAX_RIGHT,
-        ),
-      ],
-      bursts: Array.from({ length: MAX_BURST_DEPTH }, () => 7n),
-    };
+    state.currentNestedCoords = Array.from(
+      { length: MAX_BURST_DEPTH },
+      () => NESTED_COORD_MAX_RIGHT_NUMBER,
+    );
+    state.currentBursts = Array.from({ length: MAX_BURST_DEPTH }, () => 7);
 
     expect(() => burst.next()).toThrow(CoordSpaceExhaustedError);
   });
