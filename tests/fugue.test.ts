@@ -16,6 +16,7 @@ import {
   NESTED_COORD_MAX_RIGHT,
   NESTED_COORD_MID,
   NESTED_COORD_WIDTH,
+  TOP_BURST_MAX,
   TOP_BURST_WIDTH,
   TOP_COORD_MAX_RIGHT,
   TOP_COORD_MID,
@@ -55,6 +56,42 @@ function makeDeterministicRandomBytes(seed: number): FugueRandomBytes {
     }
     return out;
   };
+}
+
+function makeMaxDepthBounds(leftCoord: bigint, rightCoord: bigint) {
+  const sharedBursts = Array.from({ length: MAX_BURST_DEPTH }, (_, index) =>
+    BigInt(index + 1),
+  );
+  const sharedPrefixCoords = [
+    TOP_COORD_MID,
+    ...Array.from({ length: MAX_BURST_DEPTH - 1 }, () => NESTED_COORD_MID),
+  ];
+
+  return {
+    left: formatPosition({
+      coords: [...sharedPrefixCoords, leftCoord],
+      bursts: sharedBursts,
+    }),
+    right: formatPosition({
+      coords: [...sharedPrefixCoords, rightCoord],
+      bursts: sharedBursts,
+    }),
+  };
+}
+
+function makeMaxDepthEdgePosition(topCoord: bigint, topBurst: bigint) {
+  return formatPosition({
+    coords: [
+      topCoord,
+      ...Array.from({ length: MAX_BURST_DEPTH }, () => NESTED_COORD_MID),
+    ],
+    bursts: [
+      topBurst,
+      ...Array.from({ length: MAX_BURST_DEPTH - 1 }, (_, index) =>
+        BigInt(index + 100),
+      ),
+    ],
+  });
 }
 
 function hasSingleTransition(labels: readonly string[]) {
@@ -278,6 +315,47 @@ describe("fugue", () => {
     expect(internal.maxBurstBeforeRight(ancestor, 0, right)).toBeNull();
   });
 
+  test("maxBurstBeforeRight returns null when a prefix has no next burst token", () => {
+    const internal = new Fugue() as unknown as {
+      maxBurstBeforeRight(
+        ancestor: ReturnType<typeof parsePosition>,
+        depth: number,
+        right: ReturnType<typeof parsePosition>,
+      ): bigint | null;
+    };
+    const right = parsePosition(
+      formatPosition({
+        coords: [TOP_COORD_MID, NESTED_COORD_MID],
+        bursts: [10n],
+      }),
+    );
+
+    expect(internal.maxBurstBeforeRight(right, 1, right)).toBeNull();
+  });
+
+  test("tryStartAfterLeftWithinGap returns null for invalid internal ordering", () => {
+    const internal = new Fugue() as unknown as {
+      tryStartAfterLeftWithinGap(
+        left: ReturnType<typeof parsePosition>,
+        right: ReturnType<typeof parsePosition>,
+      ): FugueBurst | null;
+    };
+    const left = parsePosition(
+      formatPosition({
+        coords: [TOP_COORD_MID, NESTED_COORD_MID],
+        bursts: [20n],
+      }),
+    );
+    const right = parsePosition(
+      formatPosition({
+        coords: [TOP_COORD_MID, NESTED_COORD_MID],
+        bursts: [10n],
+      }),
+    );
+
+    expect(internal.tryStartAfterLeftWithinGap(left, right)).toBeNull();
+  });
+
   test("startBurst can reopen a shallower middle gap when the left side is already deep", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(22) });
     const sharedBursts = [11n, 12n];
@@ -452,17 +530,84 @@ describe("fugue", () => {
     expect(() => burst.next()).toThrow(CoordSpaceExhaustedError);
   });
 
-  test("startBurstAfter exhausts once top-level space is exhausted", () => {
+  test("between can use a same-depth coord fallback at max depth", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(27) });
+    const { left, right } = makeMaxDepthBounds(101n, 303n);
+
+    const inserted = fugue.between(left, right);
+    const parsedInserted = parsePosition(inserted);
+    const parsedLeft = parsePosition(left);
+
+    expect(left < inserted).toBe(true);
+    expect(inserted < right).toBe(true);
+    expect(parsedInserted.bursts).toEqual(parsedLeft.bursts);
+    expect(parsedInserted.coords.slice(0, -1)).toEqual(
+      parsedLeft.coords.slice(0, -1),
+    );
+    expect(parsedInserted.bursts.length).toBe(MAX_BURST_DEPTH);
+  });
+
+  test("between still throws when no same-depth coord exists at max depth", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(28) });
+    const { left, right } = makeMaxDepthBounds(101n, 103n);
+
+    expect(() => fugue.between(left, right)).toThrow(BurstSpaceExhaustedError);
+  });
+
+  test("startBurst stays strict at max depth even when between can fall back", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(29) });
+    const { left, right } = makeMaxDepthBounds(101n, 303n);
+
+    expect(() => fugue.startBurst(left, right)).toThrow(
+      BurstSpaceExhaustedError,
+    );
+  });
+
+  test("startBurstAfter reuses same-top-coord burst space at the right boundary", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(8) });
-    const position = formatPosition({
-      coords: [
-        TOP_COORD_MAX_RIGHT,
-        ...Array.from({ length: MAX_BURST_DEPTH }, () => 1n),
-      ],
-      bursts: Array.from({ length: MAX_BURST_DEPTH }, () => 7n),
-    });
+    const position = makeMaxDepthEdgePosition(TOP_COORD_MAX_RIGHT, 10n);
+
+    const after = fugue.startBurstAfter(position).next();
+    const parsedAfter = parsePosition(after);
+    const parsedPosition = parsePosition(position);
+
+    expect(position < after).toBe(true);
+    expect(parsedAfter.coords[0]).toBe(TOP_COORD_MAX_RIGHT);
+    expect(parsedAfter.bursts).toHaveLength(1);
+    expect(parsedAfter.bursts[0]).toBeGreaterThan(parsedPosition.bursts[0]!);
+  });
+
+  test("startBurstBefore reuses same-top-coord burst space at the left boundary", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(30) });
+    const position = makeMaxDepthEdgePosition(1n, 10n);
+
+    const before = fugue.startBurstBefore(position).next();
+    const parsedBefore = parsePosition(before);
+    const parsedPosition = parsePosition(position);
+
+    expect(before < position).toBe(true);
+    expect(parsedBefore.coords[0]).toBe(1n);
+    expect(parsedBefore.bursts).toHaveLength(1);
+    expect(parsedBefore.bursts[0]).toBeLessThan(parsedPosition.bursts[0]!);
+  });
+
+  test("startBurstAfter exhausts once top-level coord and burst space are exhausted", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(31) });
+    const position = makeMaxDepthEdgePosition(
+      TOP_COORD_MAX_RIGHT,
+      TOP_BURST_MAX,
+    );
 
     expect(() => fugue.startBurstAfter(position)).toThrow(
+      BurstSpaceExhaustedError,
+    );
+  });
+
+  test("startBurstBefore exhausts once top-level coord and burst space are exhausted", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(32) });
+    const position = makeMaxDepthEdgePosition(1n, 0n);
+
+    expect(() => fugue.startBurstBefore(position)).toThrow(
       BurstSpaceExhaustedError,
     );
   });

@@ -25,6 +25,7 @@ import {
 } from "./position";
 
 const MAX_RANDOM_REJECTION_ATTEMPTS = 128;
+const BURST_DEPTH_EXCEEDED_MESSAGE = `Cannot open another nested burst: burst depth exceeds ${MAX_BURST_DEPTH}`;
 
 export type FugueRandomBytes = (byteLength: number) => Uint8Array;
 
@@ -80,6 +81,52 @@ function nextSequentialCoordBefore(coord: bigint) {
   }
 
   return null;
+}
+
+function midpointPositionAtSameDepth(
+  left: ParsedFuguePosition,
+  right: ParsedFuguePosition,
+) {
+  if (
+    left.bursts.length !== right.bursts.length ||
+    left.coords.length !== right.coords.length
+  ) {
+    return null;
+  }
+
+  for (let index = 0; index < left.bursts.length; index++) {
+    if (
+      left.coords[index] !== right.coords[index] ||
+      left.bursts[index] !== right.bursts[index]
+    ) {
+      return null;
+    }
+  }
+
+  const leftCoord = left.coords[left.coords.length - 1]!;
+  const rightCoord = right.coords[right.coords.length - 1]!;
+  if (rightCoord - leftCoord <= 2n) {
+    return null;
+  }
+
+  let midpoint = (leftCoord + rightCoord) / 2n;
+
+  if (midpoint % 2n === 0n) {
+    midpoint += 1n;
+  }
+
+  if (midpoint >= rightCoord) {
+    midpoint -= 2n;
+  }
+
+  if (midpoint <= leftCoord || midpoint >= rightCoord) {
+    return null;
+  }
+
+  return formatPosition({
+    coords: [...left.coords.slice(0, -1), midpoint],
+    bursts: [...left.bursts],
+  });
 }
 
 export class FugueBurst {
@@ -189,7 +236,25 @@ export class Fugue {
     left: FuguePosition | null,
     right: FuguePosition | null,
   ): FuguePosition {
-    return this.startBurst(left, right).next();
+    try {
+      return this.startBurst(left, right).next();
+    } catch (error) {
+      if (!(error instanceof BurstSpaceExhaustedError)) {
+        throw error;
+      }
+
+      const [parsedLeft, parsedRight] = this.parseBounds(left, right);
+      if (parsedLeft === null || parsedRight === null) {
+        throw error;
+      }
+
+      const fallback = midpointPositionAtSameDepth(parsedLeft, parsedRight);
+      if (fallback !== null) {
+        return fallback;
+      }
+
+      throw error;
+    }
   }
 
   startBurst(
@@ -197,7 +262,6 @@ export class Fugue {
     right: FuguePosition | null,
   ): FugueBurst {
     const [parsedLeft, parsedRight] = this.parseBounds(left, right);
-
     if (parsedLeft === null && parsedRight === null) {
       return new FugueBurst([TOP_COORD_MID], [this.randomBurstToken(0)]);
     }
@@ -246,9 +310,7 @@ export class Fugue {
     maxBurstInclusive?: bigint,
   ) {
     if (ancestor.bursts.length >= MAX_BURST_DEPTH) {
-      throw new BurstSpaceExhaustedError(
-        `Cannot open another nested burst: burst depth exceeds ${MAX_BURST_DEPTH}`,
-      );
+      throw new BurstSpaceExhaustedError(BURST_DEPTH_EXCEEDED_MESSAGE);
     }
 
     const depth = ancestor.bursts.length;
@@ -351,8 +413,9 @@ export class Fugue {
   }
 
   private startBurstAfterParsed(position: ParsedFuguePosition) {
+    const topCoord = position.coords[0]!;
     const nextTopCoord = nextSequentialCoordAfter(
-      position.coords[0]!,
+      topCoord,
       TOP_COORD_MAX_RIGHT,
     );
 
@@ -360,17 +423,59 @@ export class Fugue {
       return new FugueBurst([nextTopCoord], [this.randomBurstToken(0)]);
     }
 
-    return this.startBurstFromAncestor(position);
+    if (position.bursts.length < MAX_BURST_DEPTH) {
+      return this.startBurstFromAncestor(position);
+    }
+
+    const sameTopCoord = this.tryStartAtSameTopCoord(
+      topCoord,
+      position.bursts[0]! + 1n,
+      burstMaxAtDepth(0),
+    );
+    if (sameTopCoord !== null) {
+      return sameTopCoord;
+    }
+
+    throw new BurstSpaceExhaustedError(BURST_DEPTH_EXCEEDED_MESSAGE);
   }
 
   private startBurstBeforeParsed(position: ParsedFuguePosition) {
-    const previousTopCoord = nextSequentialCoordBefore(position.coords[0]!);
+    const topCoord = position.coords[0]!;
+    const previousTopCoord = nextSequentialCoordBefore(topCoord);
 
     if (previousTopCoord !== null) {
       return new FugueBurst([previousTopCoord], [this.randomBurstToken(0)]);
     }
 
-    return this.startBurstFromAncestor(toLeftAncestor(position));
+    if (position.bursts.length < MAX_BURST_DEPTH) {
+      return this.startBurstFromAncestor(toLeftAncestor(position));
+    }
+
+    const sameTopCoord = this.tryStartAtSameTopCoord(
+      topCoord,
+      0n,
+      position.bursts[0]! - 1n,
+    );
+    if (sameTopCoord !== null) {
+      return sameTopCoord;
+    }
+
+    throw new BurstSpaceExhaustedError(BURST_DEPTH_EXCEEDED_MESSAGE);
+  }
+
+  private tryStartAtSameTopCoord(
+    topCoord: bigint,
+    minBurstInclusive: bigint,
+    maxBurstInclusive: bigint,
+  ) {
+    if (minBurstInclusive > maxBurstInclusive) {
+      return null;
+    }
+
+    return new FugueBurst(
+      [topCoord],
+      [this.chooseBurstToken(minBurstInclusive, maxBurstInclusive)],
+    );
   }
 
   private parseBounds(
