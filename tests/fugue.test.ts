@@ -22,6 +22,7 @@ import {
   TOP_COORD_WIDTH,
   formatPosition,
   parsePosition,
+  toLeftCoord,
 } from "../src/position";
 
 const FLAT_POSITION_LENGTH =
@@ -195,6 +196,80 @@ describe("fugue", () => {
     expect(a < t).toBe(true);
     expect(parsedInserted.bursts.length).toBe(parsedC.bursts.length + 1);
     expect(parsedInserted.coords[0]).toBe(parsedC.coords[0]);
+  });
+
+  test("startBurst can reopen a shallower middle gap when the left side is already deep", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(22) });
+    const sharedBursts = [11n, 12n];
+    const right = formatPosition({
+      coords: [TOP_COORD_MID, NESTED_COORD_MID, NESTED_COORD_MID],
+      bursts: sharedBursts,
+    });
+    const left = formatPosition({
+      coords: [
+        TOP_COORD_MID,
+        NESTED_COORD_MID,
+        toLeftCoord(NESTED_COORD_MID),
+        ...Array.from(
+          { length: MAX_BURST_DEPTH - sharedBursts.length },
+          () => NESTED_COORD_MID,
+        ),
+      ],
+      bursts: [
+        ...sharedBursts,
+        ...Array.from(
+          { length: MAX_BURST_DEPTH - sharedBursts.length },
+          (_, index) => BigInt(index + 100),
+        ),
+      ],
+    });
+
+    const inserted = fugue.startBurst(left, right).next();
+    const parsedInserted = parsePosition(inserted);
+
+    expect(left < inserted).toBe(true);
+    expect(inserted < right).toBe(true);
+    expect(parsedInserted.bursts.length).toBe(sharedBursts.length + 1);
+  });
+
+  test("startBurst can reuse a shared ancestor when sibling burst space exists", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(23) });
+    const sharedBursts = [21n, 22n];
+    const left = formatPosition({
+      coords: [
+        TOP_COORD_MID,
+        NESTED_COORD_MID,
+        NESTED_COORD_MID,
+        ...Array.from(
+          { length: MAX_BURST_DEPTH - sharedBursts.length },
+          () => NESTED_COORD_MID,
+        ),
+      ],
+      bursts: [
+        ...sharedBursts,
+        30n,
+        ...Array.from(
+          { length: MAX_BURST_DEPTH - sharedBursts.length - 1 },
+          (_, index) => BigInt(index + 200),
+        ),
+      ],
+    });
+    const right = formatPosition({
+      coords: [
+        TOP_COORD_MID,
+        NESTED_COORD_MID,
+        NESTED_COORD_MID,
+        NESTED_COORD_MID,
+      ],
+      bursts: [...sharedBursts, 40n],
+    });
+
+    const inserted = fugue.startBurst(left, right).next();
+    const parsedInserted = parsePosition(inserted);
+
+    expect(left < inserted).toBe(true);
+    expect(inserted < right).toBe(true);
+    expect(parsedInserted.bursts.length).toBe(sharedBursts.length + 1);
   });
 
   test("startBurst creates contiguous burst blocks", () => {

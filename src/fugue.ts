@@ -51,6 +51,13 @@ function clonePath(path: readonly bigint[]) {
   return [...path];
 }
 
+function prefixAtDepth(position: ParsedFuguePosition, depth: number) {
+  return {
+    coords: position.coords.slice(0, depth + 1),
+    bursts: position.bursts.slice(0, depth),
+  } as ParsedFuguePosition;
+}
+
 function nextSequentialCoordAfter(coord: bigint, maxRight: bigint) {
   if (coord <= maxRight - COORD_STRIDE) {
     return coord + COORD_STRIDE;
@@ -210,6 +217,16 @@ export class Fugue {
       return this.startBurstFromAncestor(toLeftAncestor(parsedRight));
     }
 
+    if (parsedRight !== null) {
+      const shallower = this.tryStartAfterLeftWithinGap(
+        parsedLeft!,
+        parsedRight,
+      );
+      if (shallower !== null) {
+        return shallower;
+      }
+    }
+
     return this.startBurstFromAncestor(parsedLeft!);
   }
 
@@ -221,17 +238,100 @@ export class Fugue {
     return this.startBurstBeforeParsed(parsePosition(position));
   }
 
-  private startBurstFromAncestor(ancestor: ParsedFuguePosition) {
+  private startBurstFromAncestor(
+    ancestor: ParsedFuguePosition,
+    minBurstExclusive?: bigint,
+    maxBurstInclusive?: bigint,
+  ) {
     if (ancestor.bursts.length >= MAX_BURST_DEPTH) {
       throw new BurstSpaceExhaustedError(
         `Cannot open another nested burst: burst depth exceeds ${MAX_BURST_DEPTH}`,
       );
     }
 
+    const depth = ancestor.bursts.length;
+    const minBurst =
+      minBurstExclusive === undefined ? 0n : minBurstExclusive + 1n;
+    const maxBurst = maxBurstInclusive ?? burstMaxAtDepth(depth);
+
+    if (minBurst > maxBurst) {
+      throw new BurstSpaceExhaustedError(
+        `Cannot open another nested burst: burst space exhausted at depth ${depth}`,
+      );
+    }
+
     return new FugueBurst(ancestor.coords, [
       ...ancestor.bursts,
-      this.randomBurstToken(ancestor.bursts.length),
+      this.chooseBurstToken(minBurst, maxBurst),
     ]);
+  }
+
+  private tryStartAfterLeftWithinGap(
+    left: ParsedFuguePosition,
+    right: ParsedFuguePosition,
+  ) {
+    for (let depth = 0; depth <= left.bursts.length; depth++) {
+      const ancestor = prefixAtDepth(left, depth);
+
+      if (depth === left.bursts.length) {
+        if (comparePositions(ancestor, right) < 0) {
+          return this.startBurstFromAncestor(ancestor);
+        }
+        continue;
+      }
+
+      const upper = this.maxBurstBeforeRight(ancestor, depth, right);
+      if (upper === null) {
+        continue;
+      }
+
+      const lower = left.bursts[depth]!;
+      if (lower < upper) {
+        return this.startBurstFromAncestor(ancestor, lower, upper);
+      }
+    }
+
+    return null;
+  }
+
+  private maxBurstBeforeRight(
+    ancestor: ParsedFuguePosition,
+    depth: number,
+    right: ParsedFuguePosition,
+  ) {
+    if (isPositionPrefix(ancestor, right)) {
+      const rightBurst = right.bursts[depth];
+      if (rightBurst === undefined) {
+        return null;
+      }
+
+      return rightBurst - 1n;
+    }
+
+    if (comparePositions(ancestor, right) < 0) {
+      return burstMaxAtDepth(depth);
+    }
+
+    return null;
+  }
+
+  private chooseBurstToken(minInclusive: bigint, maxInclusive: bigint) {
+    if (maxInclusive < minInclusive) {
+      throw new InvalidRandomSourceError(
+        `Invalid random interval [${minInclusive}, ${maxInclusive}]`,
+      );
+    }
+
+    const span = maxInclusive - minInclusive;
+    if (span < 4n) {
+      return this.randomBetween(minInclusive, maxInclusive);
+    }
+
+    const slack = span / 4n;
+    const innerMin = minInclusive + slack;
+    const innerMax = maxInclusive - slack;
+
+    return this.randomBetween(innerMin, innerMax);
   }
 
   private startBurstAfterParsed(position: ParsedFuguePosition) {
