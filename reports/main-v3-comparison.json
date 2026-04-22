@@ -1,0 +1,691 @@
+{
+  "generatedAt": "2026-04-22T15:11:32.589Z",
+  "environment": {
+    "node": "v22.22.1",
+    "pnpm": "10.14.0"
+  },
+  "refs": {
+    "baseRef": "main",
+    "baseDir": "/tmp/fugue-main-compare",
+    "currentDir": "/Users/chase/git/teic/fugue",
+    "currentBranch": "v3",
+    "mergeBase": "41e0f9501deccac825671b55399b0fad9658f950"
+  },
+  "base": {
+    "label": "main",
+    "cwd": "/tmp/fugue-main-compare",
+    "branch": "HEAD",
+    "commit": "41e0f9501deccac825671b55399b0fad9658f950",
+    "packageDescription": "Run-anchored lexicographic ordering keys.",
+    "install": null,
+    "checks": {
+      "test": {
+        "command": "pnpm test",
+        "cwd": "/tmp/fugue-main-compare",
+        "durationMs": 5268.5,
+        "exitCode": 0,
+        "stdout": "\n> fugue@3.0.0 test /private/tmp/fugue-main-compare\n> vitest run --typecheck --coverage\n\n\n RUN  v3.2.4 /private/tmp/fugue-main-compare\n      Coverage enabled with v8\n\n ✓  TS  tests/fuzzing.test.ts (1 test)\n ✓  TS  tests/strings.test.ts (33 tests)\n ✓ tests/strings.test.ts (33 tests) 19ms\n ✓ tests/fuzzing.test.ts (1 test) 3521ms\n   ✓ fuzzing > mixed operations keep ordering and uniqueness  3521ms\n\n Test Files  4 passed (4)\n      Tests  68 passed (68)\nType Errors  no errors\n   Start at  08:11:33\n   Duration  4.22s (transform 31ms, setup 0ms, collect 61ms, tests 3.54s, environment 764ms, prepare 94ms, typecheck 482ms)\n\n % Coverage report from v8\n------------|---------|----------|---------|---------|-------------------\nFile        | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s \n------------|---------|----------|---------|---------|-------------------\nAll files   |     100 |    99.19 |     100 |     100 |                   \n index.ts   |     100 |      100 |     100 |     100 |                   \n strings.ts |     100 |    99.19 |     100 |     100 | 101,105           \n------------|---------|----------|---------|---------|-------------------\n",
+        "stderr": "Testing types with tsc and vue-tsc is an experimental feature.\nBreaking changes might not follow SemVer, please pin Vitest's version when using it.\n"
+      },
+      "typecheck": {
+        "command": "pnpm test:types",
+        "cwd": "/tmp/fugue-main-compare",
+        "durationMs": 616.56,
+        "exitCode": 0,
+        "stdout": "\n> fugue@3.0.0 test:types /private/tmp/fugue-main-compare\n> cd tests && tsc --noEmit\n\n",
+        "stderr": ""
+      },
+      "build": {
+        "command": "pnpm build",
+        "cwd": "/tmp/fugue-main-compare",
+        "durationMs": 1027.11,
+        "exitCode": 0,
+        "stdout": "\n> fugue@3.0.0 build /private/tmp/fugue-main-compare\n> tsup src/index.ts --format cjs,esm --dts\n\nCLI Building entry: src/index.ts\nCLI Using tsconfig: tsconfig.json\nCLI tsup v8.5.0\nCLI Target: esnext\nCJS Build start\nESM Build start\nCJS dist/index.cjs 20.98 KB\nCJS ⚡️ Build success in 12ms\nESM dist/index.js 19.09 KB\nESM ⚡️ Build success in 12ms\nDTS Build start\nDTS ⚡️ Build success in 550ms\nDTS dist/index.d.cts 3.79 KB\nDTS dist/index.d.ts  3.79 KB\n",
+        "stderr": ""
+      },
+      "size": {
+        "command": "pnpm size",
+        "cwd": "/tmp/fugue-main-compare",
+        "durationMs": 237.91,
+        "exitCode": 0,
+        "stdout": "\n> fugue@3.0.0 size /private/tmp/fugue-main-compare\n> size-limit\n\n  \n  Size: 2.84 kB with all dependencies, minified and brotlied\n  \n",
+        "stderr": "- Adding to empty esbuild project\n✔ Adding to empty esbuild project\n"
+      }
+    },
+    "runtime": {
+      "mode": "run",
+      "exportCount": 26,
+      "exports": [
+        "ANCHOR_BITS",
+        "ANCHOR_WIDTH",
+        "DIGITS",
+        "Fugue",
+        "FugueRun",
+        "InvalidPositionError",
+        "RUN_BITS",
+        "RUN_WIDTH",
+        "RunPrefixExhaustedError",
+        "SEPARATOR",
+        "SLOT_BITS",
+        "SLOT_MAX",
+        "SLOT_MID",
+        "SLOT_MIN",
+        "SLOT_STEP_DEFAULT",
+        "SLOT_WIDTH",
+        "SecureRandomUnavailableError",
+        "SlotExhaustedError",
+        "decode62",
+        "encode62",
+        "formatPosition",
+        "formatRunPrefix",
+        "getRunPrefix",
+        "isFuguePosition",
+        "parsePosition",
+        "parseRunPrefix"
+      ],
+      "builtIndexBytes": 19546
+    },
+    "workloads": {
+      "emptyDocumentInsert": {
+        "label": "emptyDocumentInsert",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 65.567,
+        "avgMs": 66.768,
+        "minMs": 64.132,
+        "maxMs": 70.776,
+        "opsPerSec": 305029.94,
+        "metrics": {
+          "count": 20000,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "appendChain": {
+        "label": "appendChain",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 120.23,
+        "avgMs": 121.606,
+        "minMs": 117.746,
+        "maxMs": 127.585,
+        "opsPerSec": 166347.31,
+        "metrics": {
+          "count": 20001,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "appendViaBetween": {
+        "label": "appendViaBetween",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 121.87,
+        "avgMs": 120.226,
+        "minMs": 114.796,
+        "maxMs": 125.139,
+        "opsPerSec": 164108.85,
+        "metrics": {
+          "count": 20001,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 3,
+          "maxTokens": 3,
+          "exhausted": false,
+          "error": null
+        }
+      },
+      "prependChain": {
+        "label": "prependChain",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 90.659,
+        "avgMs": 91.292,
+        "minMs": 90.419,
+        "maxMs": 93.953,
+        "opsPerSec": 220606.28,
+        "metrics": {
+          "count": 20001,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "prependViaBetween": {
+        "label": "prependViaBetween",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 86.906,
+        "avgMs": 85.903,
+        "minMs": 81.389,
+        "maxMs": 89.498,
+        "opsPerSec": 230133.6,
+        "metrics": {
+          "count": 20001,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 3,
+          "maxTokens": 3,
+          "exhausted": false,
+          "error": null
+        }
+      },
+      "randomMiddleInsertions": {
+        "label": "randomMiddleInsertions",
+        "operationCount": 8000,
+        "requestedOperationCount": 8000,
+        "repeats": 5,
+        "medianMs": 63.114,
+        "avgMs": 62.453,
+        "minMs": 59.8,
+        "maxMs": 65.231,
+        "opsPerSec": 126754.93,
+        "metrics": {
+          "count": 8002,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "explicitBurstOrRun": {
+        "label": "explicitBurstOrRun",
+        "operationCount": 8000,
+        "requestedOperationCount": 8000,
+        "repeats": 5,
+        "medianMs": 13.863,
+        "avgMs": 14.515,
+        "minMs": 12.791,
+        "maxMs": 18.423,
+        "opsPerSec": 577060.06,
+        "metrics": {
+          "count": 8000,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "concurrentSameGapSequences": {
+        "label": "concurrentSameGapSequences",
+        "operationCount": 8000,
+        "requestedOperationCount": 8000,
+        "repeats": 5,
+        "medianMs": 14.123,
+        "avgMs": 14.002,
+        "minMs": 13.213,
+        "maxMs": 14.45,
+        "opsPerSec": 566466.93,
+        "metrics": {
+          "count": 8000,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "sameGapUniqueness": {
+        "label": "sameGapUniqueness",
+        "durationMs": 654.769,
+        "metrics": {
+          "draws": 100000,
+          "unique": 100000,
+          "collisions": 0,
+          "collisionRate": 0
+        }
+      },
+      "validationAndSort": {
+        "validation": {
+          "label": "validation",
+          "operationCount": 18003,
+          "requestedOperationCount": 18003,
+          "repeats": 5,
+          "medianMs": 32.421,
+          "avgMs": 34.543,
+          "minMs": 30.507,
+          "maxMs": 38.888,
+          "opsPerSec": 555283.96,
+          "metrics": {
+            "datasetSize": 18003,
+            "valid": 18003,
+            "lengths": {
+              "count": 18003,
+              "avgLength": 41,
+              "minLength": 41,
+              "p50Length": 41,
+              "p95Length": 41,
+              "maxLength": 41,
+              "avgTokens": 3,
+              "maxTokens": 3
+            }
+          }
+        },
+        "sorting": {
+          "label": "sorting",
+          "operationCount": 18003,
+          "requestedOperationCount": 18003,
+          "repeats": 5,
+          "medianMs": 2.284,
+          "avgMs": 2.369,
+          "minMs": 2.237,
+          "maxMs": 2.751,
+          "opsPerSec": 7882079.23,
+          "metrics": {
+            "datasetSize": 18003,
+            "first": "AzL8n0Y58m7!0DUu7I9HHWeYAaP5V!AzL8n0Y58m8",
+            "last": "LygHa16AHYE!1f2SI9UJPXvb7vdJ1!EyITVBllPoe",
+            "lengths": {
+              "count": 18003,
+              "avgLength": 41,
+              "minLength": 41,
+              "p50Length": 41,
+              "p95Length": 41,
+              "maxLength": 41,
+              "avgTokens": 3,
+              "maxTokens": 3
+            }
+          }
+        }
+      }
+    },
+    "checkSummary": {
+      "install": null,
+      "test": {
+        "exitCode": 0,
+        "durationMs": 5268.5,
+        "stdout": "> fugue@3.0.0 test /private/tmp/fugue-main-compare\n> vitest run --typecheck --coverage\n\n\n RUN  v3.2.4 /private/tmp/fugue-main-compare\n      Coverage enabled with v8\n\n ✓  TS  tests/fuzzing.test.ts (1 test)\n ✓  TS  tests/strings.test.ts (33 tests)\n ✓ tests/strings.test.ts (33 tests) 19ms\n ✓ tests/fuzzing.test.ts (1 test) 3521ms\n   ✓ fuzzing > mixed operations keep ordering and uniqueness  3521ms\n\n Test Files  4 passed (4)\n      Tests  68 passed (68)\nType Errors  no errors\n   Start at  08:11:33\n   Duration  4.22s (transform 31ms, setup 0ms, collect 61ms, tests 3.54s, environment 764ms, prepare 94ms, typecheck 482ms)\n\n % Coverage report from v8\n------------|---------|----------|---------|---------|-------------------\nFile        | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s \n------------|---------|----------|---------|---------|-------------------\nAll files   |     100 |    99.19 |     100 |     100 |                   \n index.ts   |     100 |      100 |     100 |     100 |                   \n strings.ts |     100 |    99.19 |     100 |     100 | 101,105           \n------------|---------|----------|---------|---------|-------------------",
+        "stderr": "Testing types with tsc and vue-tsc is an experimental feature.\nBreaking changes might not follow SemVer, please pin Vitest's version when using it."
+      },
+      "typecheck": {
+        "exitCode": 0,
+        "durationMs": 616.56,
+        "stdout": "> fugue@3.0.0 test:types /private/tmp/fugue-main-compare\n> cd tests && tsc --noEmit",
+        "stderr": ""
+      },
+      "build": {
+        "exitCode": 0,
+        "durationMs": 1027.11,
+        "stdout": "> fugue@3.0.0 build /private/tmp/fugue-main-compare\n> tsup src/index.ts --format cjs,esm --dts\n\nCLI Building entry: src/index.ts\nCLI Using tsconfig: tsconfig.json\nCLI tsup v8.5.0\nCLI Target: esnext\nCJS Build start\nESM Build start\nCJS dist/index.cjs 20.98 KB\nCJS ⚡️ Build success in 12ms\nESM dist/index.js 19.09 KB\nESM ⚡️ Build success in 12ms\nDTS Build start\nDTS ⚡️ Build success in 550ms\nDTS dist/index.d.cts 3.79 KB\nDTS dist/index.d.ts  3.79 KB",
+        "stderr": ""
+      },
+      "size": {
+        "exitCode": 0,
+        "durationMs": 237.91,
+        "stdout": "> fugue@3.0.0 size /private/tmp/fugue-main-compare\n> size-limit\n\n  \n  Size: 2.84 kB with all dependencies, minified and brotlied",
+        "stderr": "- Adding to empty esbuild project\n✔ Adding to empty esbuild project"
+      }
+    }
+  },
+  "current": {
+    "label": "current",
+    "cwd": "/Users/chase/git/teic/fugue",
+    "branch": "v3",
+    "commit": "8c50b5373b1757dd8ed4fe55ce28a5d046724f01",
+    "packageDescription": "Burst-oriented recursive lexicographic ordering keys.",
+    "install": null,
+    "checks": {
+      "test": {
+        "command": "pnpm test",
+        "cwd": "/Users/chase/git/teic/fugue",
+        "durationMs": 3949.27,
+        "exitCode": 0,
+        "stdout": "\n> fugue@3.0.0 test /Users/chase/git/teic/fugue\n> vitest run --typecheck --coverage\n\n\n RUN  v3.2.4 /Users/chase/git/teic/fugue\n      Coverage enabled with v8\n\n ✓  TS  tests/fuzzing.test.ts (3 tests)\n ✓  TS  tests/fugue.test.ts (21 tests)\n ✓  TS  tests/position.test.ts (9 tests)\n ✓  TS  tests/codec.test.ts (4 tests)\n ✓ tests/codec.test.ts (4 tests) 2ms\n ✓ tests/position.test.ts (9 tests) 4ms\n ✓ tests/fugue.test.ts (21 tests) 27ms\n ✓ tests/fuzzing.test.ts (3 tests) 2543ms\n   ✓ fuzzing > repeated inserts into one gap stay unique at 100k scale  817ms\n   ✓ fuzzing > mixed operations keep ordering and uniqueness  1695ms\n\n Test Files  8 passed (8)\n      Tests  74 passed (74)\nType Errors  no errors\n   Start at  08:11:44\n   Duration  3.35s (transform 70ms, setup 0ms, collect 145ms, tests 2.57s, environment 1.52s, prepare 244ms, typecheck 530ms)\n\n % Coverage report from v8\n-------------|---------|----------|---------|---------|-------------------------\nFile         | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s       \n-------------|---------|----------|---------|---------|-------------------------\nAll files    |   97.25 |    95.07 |     100 |   97.25 |                         \n codec.ts    |     100 |      100 |     100 |     100 |                         \n errors.ts   |     100 |      100 |     100 |     100 |                         \n fugue.ts    |   97.08 |    96.87 |     100 |   97.08 | 60-61,72-73,103-106     \n index.ts    |     100 |      100 |     100 |     100 |                         \n position.ts |   96.42 |    91.13 |     100 |   96.42 | ...,42-43,46-47,119-120 \n-------------|---------|----------|---------|---------|-------------------------\n",
+        "stderr": "Testing types with tsc and vue-tsc is an experimental feature.\nBreaking changes might not follow SemVer, please pin Vitest's version when using it.\n"
+      },
+      "typecheck": {
+        "command": "pnpm test:types",
+        "cwd": "/Users/chase/git/teic/fugue",
+        "durationMs": 613.48,
+        "exitCode": 0,
+        "stdout": "\n> fugue@3.0.0 test:types /Users/chase/git/teic/fugue\n> cd tests && tsc --noEmit\n\n",
+        "stderr": ""
+      },
+      "build": {
+        "command": "pnpm build",
+        "cwd": "/Users/chase/git/teic/fugue",
+        "durationMs": 1024.28,
+        "exitCode": 0,
+        "stdout": "\n> fugue@3.0.0 build /Users/chase/git/teic/fugue\n> tsup src/index.ts --format cjs,esm --dts\n\nCLI Building entry: src/index.ts\nCLI Using tsconfig: tsconfig.json\nCLI tsup v8.5.0\nCLI Target: esnext\nCJS Build start\nESM Build start\nESM dist/index.js 15.84 KB\nESM ⚡️ Build success in 14ms\nCJS dist/index.cjs 17.25 KB\nCJS ⚡️ Build success in 14ms\nDTS Build start\nDTS ⚡️ Build success in 533ms\nDTS dist/index.d.cts 2.14 KB\nDTS dist/index.d.ts  2.14 KB\n",
+        "stderr": ""
+      },
+      "size": {
+        "command": "pnpm size",
+        "cwd": "/Users/chase/git/teic/fugue",
+        "durationMs": 335.06,
+        "exitCode": 0,
+        "stdout": "\n> fugue@3.0.0 size /Users/chase/git/teic/fugue\n> size-limit\n\n  \n  Size: 2.33 kB with all dependencies, minified and brotlied\n  \n",
+        "stderr": "- Adding to empty esbuild project\n✔ Adding to empty esbuild project\n"
+      }
+    },
+    "runtime": {
+      "mode": "burst",
+      "exportCount": 9,
+      "exports": [
+        "BurstSpaceExhaustedError",
+        "CoordSpaceExhaustedError",
+        "Fugue",
+        "FugueBurst",
+        "InvalidBoundsError",
+        "InvalidPositionError",
+        "InvalidRandomSourceError",
+        "SecureRandomUnavailableError",
+        "isFuguePosition"
+      ],
+      "builtIndexBytes": 16225
+    },
+    "workloads": {
+      "emptyDocumentInsert": {
+        "label": "emptyDocumentInsert",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 57.814,
+        "avgMs": 57.884,
+        "minMs": 52.932,
+        "maxMs": 65.314,
+        "opsPerSec": 345938.96,
+        "metrics": {
+          "count": 20000,
+          "avgLength": 26,
+          "minLength": 26,
+          "p50Length": 26,
+          "p95Length": 26,
+          "maxLength": 26,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "appendChain": {
+        "label": "appendChain",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 73.849,
+        "avgMs": 76.256,
+        "minMs": 70.157,
+        "maxMs": 82.562,
+        "opsPerSec": 270824.12,
+        "metrics": {
+          "count": 20001,
+          "avgLength": 26,
+          "minLength": 26,
+          "p50Length": 26,
+          "p95Length": 26,
+          "maxLength": 26,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "appendViaBetween": {
+        "label": "appendViaBetween",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 69.972,
+        "avgMs": 71.213,
+        "minMs": 69.57,
+        "maxMs": 75.799,
+        "opsPerSec": 285827.6,
+        "metrics": {
+          "count": 20001,
+          "avgLength": 26,
+          "minLength": 26,
+          "p50Length": 26,
+          "p95Length": 26,
+          "maxLength": 26,
+          "avgTokens": 3,
+          "maxTokens": 3,
+          "exhausted": false,
+          "error": null
+        }
+      },
+      "prependChain": {
+        "label": "prependChain",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 69.055,
+        "avgMs": 69.04,
+        "minMs": 68.601,
+        "maxMs": 69.516,
+        "opsPerSec": 289624.39,
+        "metrics": {
+          "count": 20001,
+          "avgLength": 26,
+          "minLength": 26,
+          "p50Length": 26,
+          "p95Length": 26,
+          "maxLength": 26,
+          "avgTokens": 3,
+          "maxTokens": 3
+        }
+      },
+      "prependViaBetween": {
+        "label": "prependViaBetween",
+        "operationCount": 20000,
+        "requestedOperationCount": 20000,
+        "repeats": 5,
+        "medianMs": 69.158,
+        "avgMs": 69.465,
+        "minMs": 68.638,
+        "maxMs": 70.808,
+        "opsPerSec": 289194.78,
+        "metrics": {
+          "count": 20001,
+          "avgLength": 26,
+          "minLength": 26,
+          "p50Length": 26,
+          "p95Length": 26,
+          "maxLength": 26,
+          "avgTokens": 3,
+          "maxTokens": 3,
+          "exhausted": false,
+          "error": null
+        }
+      },
+      "randomMiddleInsertions": {
+        "label": "randomMiddleInsertions",
+        "operationCount": 8000,
+        "requestedOperationCount": 8000,
+        "repeats": 5,
+        "medianMs": 316.262,
+        "avgMs": 314.79,
+        "minMs": 299.643,
+        "maxMs": 327.095,
+        "opsPerSec": 25295.49,
+        "metrics": {
+          "count": 8002,
+          "avgLength": 255.12,
+          "minLength": 26,
+          "p50Length": 251,
+          "p95Length": 341,
+          "maxLength": 446,
+          "avgTokens": 33.55,
+          "maxTokens": 59
+        }
+      },
+      "explicitBurstOrRun": {
+        "label": "explicitBurstOrRun",
+        "operationCount": 8000,
+        "requestedOperationCount": 8000,
+        "repeats": 5,
+        "medianMs": 14.258,
+        "avgMs": 14.259,
+        "minMs": 13.96,
+        "maxMs": 14.551,
+        "opsPerSec": 561104.92,
+        "metrics": {
+          "count": 8000,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 5,
+          "maxTokens": 5
+        }
+      },
+      "concurrentSameGapSequences": {
+        "label": "concurrentSameGapSequences",
+        "operationCount": 8000,
+        "requestedOperationCount": 8000,
+        "repeats": 5,
+        "medianMs": 14.439,
+        "avgMs": 14.424,
+        "minMs": 13.893,
+        "maxMs": 14.771,
+        "opsPerSec": 554054.99,
+        "metrics": {
+          "count": 8000,
+          "avgLength": 41,
+          "minLength": 41,
+          "p50Length": 41,
+          "p95Length": 41,
+          "maxLength": 41,
+          "avgTokens": 5,
+          "maxTokens": 5
+        }
+      },
+      "sameGapUniqueness": {
+        "label": "sameGapUniqueness",
+        "durationMs": 550.622,
+        "metrics": {
+          "draws": 100000,
+          "unique": 100000,
+          "collisions": 0,
+          "collisionRate": 0
+        }
+      },
+      "validationAndSort": {
+        "validation": {
+          "label": "validation",
+          "operationCount": 18003,
+          "requestedOperationCount": 18003,
+          "repeats": 5,
+          "medianMs": 74.785,
+          "avgMs": 76.902,
+          "minMs": 74.204,
+          "maxMs": 85.791,
+          "opsPerSec": 240730.9,
+          "metrics": {
+            "datasetSize": 18003,
+            "valid": 18003,
+            "lengths": {
+              "count": 18003,
+              "avgLength": 107.48,
+              "minLength": 26,
+              "p50Length": 26,
+              "p95Length": 326,
+              "maxLength": 461,
+              "avgTokens": 13.86,
+              "maxTokens": 61
+            }
+          }
+        },
+        "sorting": {
+          "label": "sorting",
+          "operationCount": 18003,
+          "requestedOperationCount": 18003,
+          "repeats": 5,
+          "medianMs": 7.565,
+          "avgMs": 7.509,
+          "minMs": 7.184,
+          "maxMs": 7.716,
+          "opsPerSec": 2379631.21,
+          "metrics": {
+            "datasetSize": 18003,
+            "first": "Uzzzzzzzzzz!TkHw84Q!Uzzzzz",
+            "last": "V00000rDmt5!JROR5bd!Uzzzzz",
+            "lengths": {
+              "count": 18003,
+              "avgLength": 107.48,
+              "minLength": 26,
+              "p50Length": 26,
+              "p95Length": 326,
+              "maxLength": 461,
+              "avgTokens": 13.86,
+              "maxTokens": 61
+            }
+          }
+        }
+      }
+    },
+    "checkSummary": {
+      "install": null,
+      "test": {
+        "exitCode": 0,
+        "durationMs": 3949.27,
+        "stdout": "> fugue@3.0.0 test /Users/chase/git/teic/fugue\n> vitest run --typecheck --coverage\n\n\n RUN  v3.2.4 /Users/chase/git/teic/fugue\n      Coverage enabled with v8\n\n ✓  TS  tests/fuzzing.test.ts (3 tests)\n ✓  TS  tests/fugue.test.ts (21 tests)\n ✓  TS  tests/position.test.ts (9 tests)\n ✓  TS  tests/codec.test.ts (4 tests)\n ✓ tests/codec.test.ts (4 tests) 2ms\n ✓ tests/position.test.ts (9 tests) 4ms\n ✓ tests/fugue.test.ts (21 tests) 27ms\n ✓ tests/fuzzing.test.ts (3 tests) 2543ms\n   ✓ fuzzing > repeated inserts into one gap stay unique at 100k scale  817ms\n   ✓ fuzzing > mixed operations keep ordering and uniqueness  1695ms\n\n Test Files  8 passed (8)\n      Tests  74 passed (74)\nType Errors  no errors\n   Start at  08:11:44\n   Duration  3.35s (transform 70ms, setup 0ms, collect 145ms, tests 2.57s, environment 1.52s, prepare 244ms, typecheck 530ms)\n\n % Coverage report from v8\n-------------|---------|----------|---------|---------|-------------------------\nFile         | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s       \n-------------|---------|----------|---------|---------|-------------------------\nAll files    |   97.25 |    95.07 |     100 |   97.25 |                         \n codec.ts    |     100 |      100 |     100 |     100 |                         \n errors.ts   |     100 |      100 |     100 |     100 |                         \n fugue.ts    |   97.08 |    96.87 |     100 |   97.08 | 60-61,72-73,103-106     \n index.ts    |     100 |      100 |     100 |     100 |                         \n position.ts |   96.42 |    91.13 |     100 |   96.42 | ...,42-43,46-47,119-120 \n-------------|---------|----------|---------|---------|-------------------------",
+        "stderr": "Testing types with tsc and vue-tsc is an experimental feature.\nBreaking changes might not follow SemVer, please pin Vitest's version when using it."
+      },
+      "typecheck": {
+        "exitCode": 0,
+        "durationMs": 613.48,
+        "stdout": "> fugue@3.0.0 test:types /Users/chase/git/teic/fugue\n> cd tests && tsc --noEmit",
+        "stderr": ""
+      },
+      "build": {
+        "exitCode": 0,
+        "durationMs": 1024.28,
+        "stdout": "> fugue@3.0.0 build /Users/chase/git/teic/fugue\n> tsup src/index.ts --format cjs,esm --dts\n\nCLI Building entry: src/index.ts\nCLI Using tsconfig: tsconfig.json\nCLI tsup v8.5.0\nCLI Target: esnext\nCJS Build start\nESM Build start\nESM dist/index.js 15.84 KB\nESM ⚡️ Build success in 14ms\nCJS dist/index.cjs 17.25 KB\nCJS ⚡️ Build success in 14ms\nDTS Build start\nDTS ⚡️ Build success in 533ms\nDTS dist/index.d.cts 2.14 KB\nDTS dist/index.d.ts  2.14 KB",
+        "stderr": ""
+      },
+      "size": {
+        "exitCode": 0,
+        "durationMs": 335.06,
+        "stdout": "> fugue@3.0.0 size /Users/chase/git/teic/fugue\n> size-limit\n\n  \n  Size: 2.33 kB with all dependencies, minified and brotlied",
+        "stderr": "- Adding to empty esbuild project\n✔ Adding to empty esbuild project"
+      }
+    }
+  },
+  "exitCodes": {
+    "base": {
+      "install": 0,
+      "test": 0,
+      "typecheck": 0,
+      "build": 0,
+      "size": 0
+    },
+    "current": {
+      "install": 0,
+      "test": 0,
+      "typecheck": 0,
+      "build": 0,
+      "size": 0
+    }
+  }
+}

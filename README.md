@@ -157,9 +157,9 @@ Extra `!<burst>!<coord>` pairs only show up when later inserts need to nest insi
 Where:
 
 - `topCoord` is 11-char fixed-width base62
-- `topBurst` is 6-char fixed-width base62
+- `topBurst` is 7-char fixed-width base62
 - nested `coord` tokens are 6-char fixed-width base62
-- nested `burst` tokens are 5-char fixed-width base62
+- nested `burst` tokens are 7-char fixed-width base62
 
 Actual keys are opaque and fixed-width.
 Examples above use shortened readable tokens for intuition.
@@ -191,7 +191,7 @@ Why this works:
 - concurrent sibling bursts stay contiguous blocks
 - flat keys are compact; each extra nested burst level adds one `!burst!coord` pair
 - burst depth is capped at 64
-- collisions are probabilistic and negligible in practice with a CSPRNG
+- collisions are still probabilistic, but 7-char burst tokens make accidental sibling collisions very rare with a CSPRNG
 - extreme exhaustion cases throw explicit errors instead of silently generating wrong keys
 
 ## Randomness

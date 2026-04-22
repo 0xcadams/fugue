@@ -6,6 +6,7 @@
   "scripts": {
     "clean": "rm -rf dist node_modules coverage",
     "build": "tsup src/index.ts --format cjs,esm --dts",
+    "compare:branches": "node scripts/compare-branches.mjs",
     "format": "prettier --write .",
     "release": "pnpm run build && pnpm publish",
     "test": "vitest run --typecheck --coverage",

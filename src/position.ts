@@ -4,9 +4,9 @@ import { InvalidPositionError } from "./errors";
 export const SEPARATOR = "!";
 
 export const TOP_COORD_WIDTH = 11;
-export const TOP_BURST_WIDTH = 6;
+export const TOP_BURST_WIDTH = 7;
 export const NESTED_COORD_WIDTH = 6;
-export const NESTED_BURST_WIDTH = 5;
+export const NESTED_BURST_WIDTH = 7;
 
 export const MAX_BURST_DEPTH = 64;
 
@@ -25,8 +25,6 @@ export const TOP_COORD_MAX = maxForWidth(TOP_COORD_WIDTH);
 export const TOP_BURST_MAX = maxForWidth(TOP_BURST_WIDTH);
 export const NESTED_COORD_MAX = maxForWidth(NESTED_COORD_WIDTH);
 export const NESTED_BURST_MAX = maxForWidth(NESTED_BURST_WIDTH);
-
-export const BURST_ID_MAX = NESTED_BURST_MAX;
 
 export const COORD_STRIDE = 1n << 16n;
 

@@ -15,11 +15,17 @@ import {
   MAX_BURST_DEPTH,
   NESTED_COORD_MAX_RIGHT,
   NESTED_COORD_MID,
+  NESTED_COORD_WIDTH,
+  TOP_BURST_WIDTH,
   TOP_COORD_MAX_RIGHT,
   TOP_COORD_MID,
+  TOP_COORD_WIDTH,
   formatPosition,
   parsePosition,
 } from "../src/position";
+
+const FLAT_POSITION_LENGTH =
+  TOP_COORD_WIDTH + TOP_BURST_WIDTH + NESTED_COORD_WIDTH + 2;
 
 function makePRNG(seed: number) {
   let state = seed >>> 0;
@@ -80,9 +86,9 @@ describe("fugue", () => {
     expect(parsedAfter.bursts.length).toBe(1);
     expect(parsedBefore.coords[0]).toBeLessThan(parsedMiddle.coords[0]!);
     expect(parsedMiddle.coords[0]).toBeLessThan(parsedAfter.coords[0]!);
-    expect(before.length).toBe(25);
-    expect(middle.length).toBe(25);
-    expect(after.length).toBe(25);
+    expect(before.length).toBe(FLAT_POSITION_LENGTH);
+    expect(middle.length).toBe(FLAT_POSITION_LENGTH);
+    expect(after.length).toBe(FLAT_POSITION_LENGTH);
   });
 
   test("repeated edge inserts stay flat", () => {
@@ -96,7 +102,7 @@ describe("fugue", () => {
       const parsed = parsePosition(appended);
 
       expect(parsed.bursts.length).toBe(1);
-      expect(appended.length).toBe(25);
+      expect(appended.length).toBe(FLAT_POSITION_LENGTH);
     }
 
     const prependFugue = new Fugue({
@@ -109,8 +115,67 @@ describe("fugue", () => {
       const parsed = parsePosition(prepended);
 
       expect(parsed.bursts.length).toBe(1);
-      expect(prepended.length).toBe(25);
+      expect(prepended.length).toBe(FLAT_POSITION_LENGTH);
     }
+
+    const appendBetweenFugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(17),
+    });
+    let appendedViaBetween = appendBetweenFugue.first();
+
+    for (let index = 0; index < 200; index++) {
+      appendedViaBetween = appendBetweenFugue.between(appendedViaBetween, null);
+      const parsed = parsePosition(appendedViaBetween);
+
+      expect(parsed.bursts.length).toBe(1);
+      expect(appendedViaBetween.length).toBe(FLAT_POSITION_LENGTH);
+    }
+
+    const prependBetweenFugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(18),
+    });
+    let prependedViaBetween = prependBetweenFugue.first();
+
+    for (let index = 0; index < 200; index++) {
+      prependedViaBetween = prependBetweenFugue.between(
+        null,
+        prependedViaBetween,
+      );
+      const parsed = parsePosition(prependedViaBetween);
+
+      expect(parsed.bursts.length).toBe(1);
+      expect(prependedViaBetween.length).toBe(FLAT_POSITION_LENGTH);
+    }
+  });
+
+  test("between delegates edge inserts to the same fast paths as after and before", () => {
+    const afterFugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(19),
+    });
+    const betweenAfterFugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(19),
+    });
+    const afterBase = afterFugue.first();
+    const betweenAfterBase = betweenAfterFugue.first();
+
+    expect(afterBase).toBe(betweenAfterBase);
+    expect(afterFugue.after(afterBase)).toBe(
+      betweenAfterFugue.between(betweenAfterBase, null),
+    );
+
+    const beforeFugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(20),
+    });
+    const betweenBeforeFugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(20),
+    });
+    const beforeBase = beforeFugue.first();
+    const betweenBeforeBase = betweenBeforeFugue.first();
+
+    expect(beforeBase).toBe(betweenBeforeBase);
+    expect(beforeFugue.before(beforeBase)).toBe(
+      betweenBeforeFugue.between(null, betweenBeforeBase),
+    );
   });
 
   test("between creates a fresh nested burst inside old text", () => {
@@ -264,7 +329,7 @@ describe("fugue", () => {
   });
 
   test("edge bursts only nest when top-level coord space is exhausted", () => {
-    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(17) });
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(21) });
     const maxTop = formatPosition({
       coords: [TOP_COORD_MAX_RIGHT, NESTED_COORD_MID],
       bursts: [7n],

@@ -21,9 +21,9 @@ The serialized form is an alternating path:
 Token widths:
 
 - `topCoord`: 11-char base62
-- `topBurst`: 6-char base62
+- `topBurst`: 7-char base62
 - nested `coord`: 6-char base62
-- nested `burst`: 5-char base62
+- nested `burst`: 7-char base62
 - separator: `!`
 - maximum burst depth: 64 burst tokens per key
 
@@ -209,11 +209,11 @@ Burst tokens are sampled from a CSPRNG by default.
 
 Important detail:
 
-- top-level bursts serialize to width 6
-- nested bursts serialize to width 5
-- generated burst ids fit the nested width so a burst can reuse its own token when it deepens
+- top-level bursts serialize to width 7
+- nested bursts serialize to width 7
+- a long-running burst reuses its own token when it deepens, so burst identity has the same 7-char budget at every depth
 
-Collisions are probabilistic rather than coordinated. In practice the chance is negligible with a CSPRNG.
+Collisions are probabilistic rather than coordinated. With 7-char burst tokens and a CSPRNG, accidental sibling collisions are very rare in ordinary workloads, but still not impossible.
 
 ## Exhaustion and explicit errors
 
@@ -235,5 +235,5 @@ These errors are explicit on purpose.
 - common insert: typically `O(1)`
 - `burst.next()`: typically `O(1)`
 - parse/format/compare: `O(d)` where `d` is burst depth
-- flat key length: 25 chars
-- each extra nested burst level adds one `!burst!coord` pair, about 13 chars
+- flat key length: 26 chars
+- each extra nested burst level adds one `!burst!coord` pair, about 15 chars

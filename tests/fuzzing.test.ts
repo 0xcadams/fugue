@@ -93,6 +93,21 @@ describe("fuzzing", () => {
     expect(new Set(inserted).size).toBe(inserted.length);
   });
 
+  test("repeated inserts into one gap stay unique at 100k scale", () => {
+    const fugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(0x7002),
+    });
+    const left = fugue.first();
+    const right = fugue.after(left);
+    const inserted: FuguePosition[] = [];
+
+    for (let index = 0; index < 100_000; index++) {
+      inserted.push(fugue.between(left, right));
+    }
+
+    expect(new Set(inserted).size).toBe(inserted.length);
+  });
+
   test("mixed operations keep ordering and uniqueness", () => {
     const seeds = [0x1, 0x2a2a2a2a, 0x12345678, 0x7fffffff, 0xdeadbeef];
     const opsPerSeed = 2500;

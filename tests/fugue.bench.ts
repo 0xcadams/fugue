@@ -45,12 +45,30 @@ describe("fugue", () => {
     }
   });
 
+  bench("between after chain stays flat", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(9) });
+    let position = fugue.first();
+
+    for (let index = 0; index < 1000; index++) {
+      position = fugue.between(position, null);
+    }
+  });
+
   bench("before chain stays flat", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(7) });
     let position = fugue.first();
 
     for (let index = 0; index < 1000; index++) {
       position = fugue.before(position);
+    }
+  });
+
+  bench("between before chain stays flat", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(10) });
+    let position = fugue.first();
+
+    for (let index = 0; index < 1000; index++) {
+      position = fugue.between(null, position);
     }
   });
 

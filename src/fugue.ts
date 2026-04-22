@@ -7,7 +7,6 @@ import {
   SecureRandomUnavailableError,
 } from "./errors";
 import {
-  BURST_ID_MAX,
   COORD_STRIDE,
   MAX_BURST_DEPTH,
   NESTED_COORD_MAX_RIGHT,
@@ -15,6 +14,7 @@ import {
   SEPARATOR,
   TOP_COORD_MAX_RIGHT,
   TOP_COORD_MID,
+  burstMaxAtDepth,
   comparePositions,
   formatPosition,
   isPositionPrefix,
@@ -192,7 +192,15 @@ export class Fugue {
     const [parsedLeft, parsedRight] = this.parseBounds(left, right);
 
     if (parsedLeft === null && parsedRight === null) {
-      return new FugueBurst([TOP_COORD_MID], [this.randomBurstToken()]);
+      return new FugueBurst([TOP_COORD_MID], [this.randomBurstToken(0)]);
+    }
+
+    if (parsedLeft !== null && parsedRight === null) {
+      return this.startBurstAfterParsed(parsedLeft);
+    }
+
+    if (parsedLeft === null && parsedRight !== null) {
+      return this.startBurstBeforeParsed(parsedRight);
     }
 
     if (
@@ -206,30 +214,11 @@ export class Fugue {
   }
 
   startBurstAfter(position: FuguePosition): FugueBurst {
-    const parsedPosition = parsePosition(position);
-    const nextTopCoord = nextSequentialCoordAfter(
-      parsedPosition.coords[0]!,
-      TOP_COORD_MAX_RIGHT,
-    );
-
-    if (nextTopCoord !== null) {
-      return new FugueBurst([nextTopCoord], [this.randomBurstToken()]);
-    }
-
-    return this.startBurstFromAncestor(parsedPosition);
+    return this.startBurstAfterParsed(parsePosition(position));
   }
 
   startBurstBefore(position: FuguePosition): FugueBurst {
-    const parsedPosition = parsePosition(position);
-    const previousTopCoord = nextSequentialCoordBefore(
-      parsedPosition.coords[0]!,
-    );
-
-    if (previousTopCoord !== null) {
-      return new FugueBurst([previousTopCoord], [this.randomBurstToken()]);
-    }
-
-    return this.startBurstFromAncestor(toLeftAncestor(parsedPosition));
+    return this.startBurstBeforeParsed(parsePosition(position));
   }
 
   private startBurstFromAncestor(ancestor: ParsedFuguePosition) {
@@ -241,8 +230,31 @@ export class Fugue {
 
     return new FugueBurst(ancestor.coords, [
       ...ancestor.bursts,
-      this.randomBurstToken(),
+      this.randomBurstToken(ancestor.bursts.length),
     ]);
+  }
+
+  private startBurstAfterParsed(position: ParsedFuguePosition) {
+    const nextTopCoord = nextSequentialCoordAfter(
+      position.coords[0]!,
+      TOP_COORD_MAX_RIGHT,
+    );
+
+    if (nextTopCoord !== null) {
+      return new FugueBurst([nextTopCoord], [this.randomBurstToken(0)]);
+    }
+
+    return this.startBurstFromAncestor(position);
+  }
+
+  private startBurstBeforeParsed(position: ParsedFuguePosition) {
+    const previousTopCoord = nextSequentialCoordBefore(position.coords[0]!);
+
+    if (previousTopCoord !== null) {
+      return new FugueBurst([previousTopCoord], [this.randomBurstToken(0)]);
+    }
+
+    return this.startBurstFromAncestor(toLeftAncestor(position));
   }
 
   private parseBounds(
@@ -273,8 +285,8 @@ export class Fugue {
     return parsePosition(value);
   }
 
-  private randomBurstToken() {
-    return this.randomBetween(0n, BURST_ID_MAX);
+  private randomBurstToken(depth: number) {
+    return this.randomBetween(0n, burstMaxAtDepth(depth));
   }
 
   private randomBelow(limit: bigint) {
