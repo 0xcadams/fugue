@@ -1,24 +1,11 @@
 # fugue
 
-Client-generated ordering keys for collaborative ordered data.
+Client-generated ordering keys for collaborative lists and text.
 
-`fugue` creates opaque string keys you can store and sort to represent item order.
-It is designed for collaborative apps where multiple clients insert and move items concurrently.
+`fugue` creates opaque string keys that you can store and sort with plain string comparison.
+It is built for local-first and collaborative apps where clients need to generate order keys locally without rewriting older keys.
 
-## What problem does this solve?
-
-If your app has ordered items (cards, rows, comments, blocks), you usually hit these issues:
-
-- inserting between two items often requires renumbering old items
-- concurrent inserts can interleave in hard-to-reason-about ways
-- clients need to generate order keys locally (optimistic/offline), without central coordination
-
-`fugue` solves this with keys that:
-
-- sort correctly with plain string comparison
-- can be generated independently on any client
-- support insert-before, insert-after, and insert-between
-- keep insertion bursts contiguous as sorted blocks
+It also has first-class support for collaborative text editors - users can edit the same sections simultaneously without stomping on each other.
 
 ## Installation
 
@@ -47,258 +34,171 @@ console.log(first < middle && middle < second);
 // true
 ```
 
-`between(left, right)` handles all common insert cases:
+`between(left, right)` handles the common insert cases:
 
-- `between(null, right)` -> before first item
-- `between(left, null)` -> after last item
-- `between(left, right)` -> between two items
+- `between(null, right)` -> before the first item
+- `between(left, null)` -> after the last item
+- `between(left, right)` -> between two existing items
+
+## Mental model
+
+Think of a key as a path through a tree.
+
+- a `coord` token says where you are at that level
+- a `burst` token says which insertion burst owns the subtree below it
+- a fresh burst inside old text becomes a nested subtree, not a reused old burst id
+
+Examples below use shortened readable tokens for intuition.
+
+If one burst types `cat`, then a later burst inserts `red` after `c`:
+
+```text
+root
+`-- 50  top coord
+    `-- A  original burst
+        |-- 50 -> c
+        |   `-- B  later burst
+        |       |-- 50 -> r
+        |       |-- 60 -> e
+        |       `-- 70 -> d
+        |-- 60 -> a
+        `-- 70 -> t
+```
+
+So `50!A!50!B!60` means:
+top coord `50`, burst `A`, coord `50`, child burst `B`, coord `60`.
+
+Shared prefix means shared branch.
+That is why later inserts stay together as one contiguous block.
+
+## Burst API
+
+For typing, paste, or any other uninterrupted insertion episode, use an explicit burst:
+
+```ts
+import { Fugue } from "fugue";
+
+const fugue = new Fugue();
+
+const left = fugue.first();
+const right = fugue.after(left);
+
+const burst = fugue.startBurst(left, right);
+
+const p1 = burst.next();
+const p2 = burst.next();
+const p3 = burst.next();
+```
+
+Use `between(...)` for one-offs.
+Use `startBurst(...)` + `next()` for multi-item bursts.
+
+## Example: type a burst
+
+One burst typing `cat` might look like this conceptually:
+
+```text
+50!A!50
+50!A!60
+50!A!70
+```
+
+Those three keys sort as one contiguous block because they share the same burst prefix `50!A`.
+
+## Example: later insert inside old text
+
+For the `cat` plus later `red` insert above, the sorted conceptual keys are:
+
+```text
+50!A!50
+50!A!50!B!50
+50!A!50!B!60
+50!A!50!B!70
+50!A!60
+50!A!70
+```
+
+The later burst `B` is a real nested burst.
+It stays contiguous as its own block instead of interleaving item-by-item with the older burst.
+
+## Example: concurrent bursts in the same gap
+
+If two clients start bursts in the same old gap, each burst still sorts as a block:
+
+```text
+50!A!50
+50!A!50!B!50
+50!A!50!B!60
+50!A!50!C!50
+50!A!50!C!60
+50!A!60
+```
+
+So you get `BBCC`, not `BCBC`.
 
 ## How the keys look
 
-Most of the time, think of a key as:
+Behind that tree, the wire format is a recursive alternating path:
 
-`<anchor>!<runId>!<slot>`
+```text
+<topCoord>!<topBurst>!<coord>[!<burst>!<coord>]...
+```
 
-That simple shape is enough for the common mental model:
+For the usual ordered-list case, keys stay simple and compact.
 
-- `anchor` says where the run sits among other runs
-- `runId` identifies one insertion burst and breaks ties between concurrent runs
-- `slot` says where one item sits inside that run
+If you mostly use `first()`, `after()`, and occasional `between(left, right)`, positions are typically just a top-level path:
 
-When Fugue needs more precision, `anchor` and `slot` can grow into paths:
+```text
+<topCoord>!<topBurst>!<coord>
+```
 
-`<anchor>[~<subanchor>...]!<runId>!<slot>[~<subslot>...]`
+Extra `!<burst>!<coord>` pairs only show up when later inserts need to nest inside older content.
 
-Examples below use short readable values like `07!n4Kp2x!50` or `07~04!n4Kp2x!50~10`.
-Real Fugue keys use fixed-width base62 segments.
+Where:
 
-## Why subanchors and subslots exist
+- `topCoord` is 11-char fixed-width base62
+- `topBurst` is 6-char fixed-width base62
+- nested `coord` tokens are 6-char fixed-width base62
+- nested `burst` tokens are 5-char fixed-width base62
 
-Most inserts fit in the simple form.
-
-Fugue only adds deeper path segments when the current level runs out of room:
-
-- `subanchors` appear when there is no room between neighboring runs at the current anchor depth
-- `subslots` appear when there is no room between neighboring items in the same run at the current slot depth
-
-This lets Fugue keep inserting without rewriting older keys.
+Actual keys are opaque and fixed-width.
+Examples above use shortened readable tokens for intuition.
 
 ## Ordering
 
 Sort keys with plain binary/code-point string comparison.
 Do not use locale collation.
 
-Conceptually, keys compare by:
+Why this works:
 
-1. `anchorPath`
-2. `runId`
-3. `slotPath`
+- all tokens are fixed-width base62 at their depth
+- `!` sorts before digits and letters
+- tokens compare left to right
+- if one key is a strict prefix of another, the shorter key sorts first
 
-Within `anchorPath` or `slotPath`:
+## Burst behavior
 
-- compare segments left to right
-- the first differing segment decides order
-- if one path is a strict prefix of the other, the shorter path sorts first
-
-## Common operations
-
-### Insert at top or bottom
-
-```ts
-// Example positions:
-// currentFirst = "05!aaaaaa!50"
-// currentLast  = "09!zzzzzz!50"
-
-const top = fugue.between(null, currentFirst);
-const bottom = fugue.between(currentLast, null);
-
-// Example output:
-// top    = "02!k3M9Qa!50"
-// bottom = "0D!p9T2Lm!50"
-```
-
-### Insert between two neighbors
-
-```ts
-// Example neighbors:
-// left  = "05!aaaaaa!50"
-// right = "09!zzzzzz!50"
-
-const middle = fugue.between(left, right);
-
-// Example output:
-// middle = "07!n4Kp2x!50"
-```
-
-### Move an item to a new location
-
-```ts
-// Example target gap:
-// newLeft  = "07!Q7mL1d!60"
-// newRight = "07!n4Kp2x!50"
-
-const newPosition = fugue.between(newLeft, newRight);
-// save newPosition on the moved row
-```
-
-### Insert a burst contiguously (typing/paste)
-
-```ts
-// Example bounds around insertion gap:
-// left  = "05!aaaaaa!50"
-// right = "09!zzzzzz!50"
-
-const run = fugue.startRun(left, right);
-
-const p1 = run.next();
-const p2 = run.next();
-const p3 = run.next();
-
-// Example output:
-// p1 = "07!n4Kp2x!50"
-// p2 = "07!n4Kp2x!60"
-// p3 = "07!n4Kp2x!70"
-```
-
-Use `between(...)` for single inserts.
-Use `startRun(...)` + `next()` for bursts.
-
-If one slot path segment fills up, `run.next()` deepens the slot path instead of failing immediately.
-It only throws `SlotExhaustedError` after the slot path reaches the maximum depth of 64 segments.
-
-### Run lifecycle in text editors
-
-In collaborative editing, treat one run as one continuous typing/paste burst.
-
-Keep using the current run while inserts are continuing in the same cursor gap.
-Start a new run when any of these happens:
-
-- cursor/selection moved (click/tap, arrow/home/end, selection jump, undo/redo relocation)
-- observed insertion bounds changed (different left/right neighbors, including remote edits once applied locally)
-
-```ts
-import { Fugue, type FuguePosition } from "fugue";
-
-const fugue = new Fugue();
-let activeRun: { next(): FuguePosition } | null = null;
-let lastLeft: FuguePosition | null = null;
-let lastRight: FuguePosition | null = null;
-
-function nextPosition(
-  left: FuguePosition | null,
-  right: FuguePosition | null,
-  cursorMoved: boolean,
-) {
-  const boundsChanged = left !== lastLeft || right !== lastRight;
-
-  if (activeRun === null || cursorMoved || boundsChanged) {
-    activeRun = fugue.startRun(left, right);
-  }
-
-  const position = activeRun.next();
-  lastLeft = left;
-  lastRight = right;
-  return position;
-}
-```
-
-### Validate stored values
-
-If you load keys from a database or network boundary, validate them before passing them back into `Fugue`.
-
-```ts
-import { Fugue, isFuguePosition } from "fugue";
-
-const fugue = new Fugue();
-
-if (isFuguePosition(maybePosition)) {
-  fugue.after(maybePosition);
-}
-```
-
-## Common problems
-
-### Problem: insert between two existing items without rewriting old keys
-
-Existing items:
-
-- `L = 05!aaaaaa!50`
-- `R = 09!zzzzzz!50`
-
-Solution:
-
-1. choose an `anchorPath` between the two neighboring runs
-2. choose a random `runId`
-3. start at a middle `slotPath`
-
-Output:
-
-`07!n4Kp2x!50`
-
-### Problem: keep burst inserts grouped
-
-One burst shares one `<anchorPath>!<runId>` prefix.
-
-Solution: call `run.next()` repeatedly within the same run.
-
-Output:
-
-```text
-07!n4Kp2x!50
-07!n4Kp2x!60
-07!n4Kp2x!70
-```
-
-### Problem: concurrent bursts in the same gap should not braid item-by-item
-
-Each burst gets a different `runId`.
-
-Solution: full-string sort keeps each run as a contiguous block.
-
-Output:
-
-```text
-07!Q7mL1d!50
-07!Q7mL1d!60
-07!Q7mL1d!70
-07!n4Kp2x!50
-07!n4Kp2x!60
-07!n4Kp2x!70
-```
-
-### Problem: there is no room at the current anchor or slot depth
-
-Solution: grow the path.
-
-- when runs are too tight, grow `anchorPath` with `~<subanchor>`
-- when items inside a run are too tight, grow `slotPath` with `~<subslot>`
-
-Example:
-
-```text
-07!n4Kp2x!50 < 07!n4Kp2x!50~50 < 07!n4Kp2x!51
-```
+- the first `burst.next()` emits a middle coord under the burst prefix
+- later `burst.next()` calls advance by a fixed stride inside the same burst
+- when that local coord space fills up, the burst deepens under itself and continues
+- the burst only fails when the recursive burst depth cap is exhausted
 
 ## Guarantees and limits
 
-- keys are opaque strings; compare/sort them as strings
-- key generation is typically `O(1)` and does not rewrite existing keys
-- run-based burst inserts remain contiguous sorted blocks
-- `anchorPath` depth is capped at 64 segments
-- `slotPath` depth is capped at 64 segments
-- collisions are probabilistic and negligible in practice with CSPRNG-based randomness (`runId`, bounded path gaps, and edge fallbacks)
-- extreme exhaustion cases are explicit errors, not silent corruption
+- keys are opaque strings; compare them as strings
+- key generation is local and does not rewrite older keys
+- fresh bursts can nest inside older bursts
+- concurrent sibling bursts stay contiguous blocks
+- flat keys are compact; each extra nested burst level adds one `!burst!coord` pair
+- burst depth is capped at 64
+- collisions are probabilistic and negligible in practice with a CSPRNG
+- extreme exhaustion cases throw explicit errors instead of silently generating wrong keys
 
-Some gaps are still mathematically impossible, even with variable-depth paths.
-For example, there is no key strictly between a prefix and its immediate zero-descendant (`p < p~0`), and there is no fresh run prefix between identical `anchorPath`s with adjacent `runId`s.
+## Randomness
 
-## Environment support
+By default, `fugue` uses `globalThis.crypto.getRandomValues`.
 
-Works in web, Node, Bun, and React Native.
-
-By default, Fugue uses `globalThis.crypto.getRandomValues` for `runId` generation and bounded path allocation.
-
-If your runtime does not provide Web Crypto, pass custom RNG:
+If your runtime does not provide Web Crypto, pass a custom RNG:
 
 ```ts
 import { randomBytes } from "node:crypto";
@@ -315,9 +215,23 @@ Optional insecure fallback:
 const fugue = new Fugue({ allowInsecureRandom: true });
 ```
 
+## Validation
+
+If you load keys from storage or the network, validate them before reuse:
+
+```ts
+import { Fugue, isFuguePosition } from "fugue";
+
+const fugue = new Fugue();
+
+if (isFuguePosition(maybePosition)) {
+  fugue.after(maybePosition);
+}
+```
+
 ## Deep dive
 
-For full algorithm details and edge-case behavior, see [`algorithm.md`](./algorithm.md).
+See [`algorithm.md`](./algorithm.md) for the full v3 format and allocation rules.
 
 ## License
 

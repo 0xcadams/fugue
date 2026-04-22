@@ -1,39 +1,29 @@
 import {
+  BurstSpaceExhaustedError,
+  CoordSpaceExhaustedError,
   InvalidBoundsError,
+  InvalidPositionError,
   InvalidRandomSourceError,
-  RunPrefixExhaustedError,
   SecureRandomUnavailableError,
-  SlotExhaustedError,
 } from "./errors";
 import {
-  ANCHOR_MAX,
-  ANCHOR_MID,
-  ANCHOR_MIN,
-  MAX_ANCHOR_PATH_DEPTH,
-  MAX_SLOT_PATH_DEPTH,
-  RUN_MAX,
-  RUN_MIN,
-  SLOT_MAX,
-  SLOT_MID,
-  SLOT_MIN,
-  comparePaths,
+  BURST_ID_MAX,
+  COORD_STRIDE,
+  MAX_BURST_DEPTH,
+  NESTED_COORD_MAX_RIGHT,
+  NESTED_COORD_MID,
+  SEPARATOR,
+  TOP_COORD_MID,
   comparePositions,
   formatPosition,
-  isSameRun,
+  isPositionPrefix,
   parsePosition,
+  toLeftAncestor,
   type FuguePosition,
   type ParsedFuguePosition,
 } from "./position";
 
-const RUN_SLOT_STEP = 1n << 48n;
 const MAX_RANDOM_REJECTION_ATTEMPTS = 128;
-
-type RunIdCandidate = {
-  anchorPath: readonly bigint[];
-  minRunId: bigint;
-  maxRunId: bigint;
-  span: bigint;
-};
 
 export type FugueRandomBytes = (byteLength: number) => Uint8Array;
 
@@ -60,95 +50,89 @@ function clonePath(path: readonly bigint[]) {
   return [...path];
 }
 
-function formatRunPrefix(anchorPath: readonly bigint[], runId: bigint) {
-  const samplePosition = formatPosition({
-    anchorPath,
-    runId,
-    slotPath: [SLOT_MID],
-  });
+function nextSequentialCoordAfter(coord: bigint) {
+  if (coord <= NESTED_COORD_MAX_RIGHT - COORD_STRIDE) {
+    return coord + COORD_STRIDE;
+  }
 
-  return samplePosition.slice(0, samplePosition.lastIndexOf("!"));
+  if (coord < NESTED_COORD_MAX_RIGHT) {
+    return NESTED_COORD_MAX_RIGHT;
+  }
+
+  return null;
 }
 
-function nextSequentialPathAfter(
-  path: readonly bigint[],
-  step: bigint,
-  maxValue: bigint,
-  midValue: bigint,
-  maxDepth: number,
-) {
-  const next = clonePath(path);
-  const lastIndex = next.length - 1;
-  const last = next[lastIndex]!;
-
-  if (last <= maxValue - step) {
-    next[lastIndex] = last + step;
-    return next;
-  }
-
-  if (last < maxValue) {
-    next[lastIndex] = maxValue;
-    return next;
-  }
-
-  if (next.length >= maxDepth) {
-    return null;
-  }
-
-  next.push(midValue);
-  return next;
-}
-
-export class FugueRun {
-  private readonly anchorPath: readonly bigint[];
-  private readonly runId: bigint;
+export class FugueBurst {
+  private readonly prefixCoords: readonly bigint[];
+  private readonly prefixBursts: readonly bigint[];
+  private readonly continuationBurst: bigint;
   private readonly prefix: string;
 
-  private readonly initialSlotPath: readonly bigint[];
-  private lastSlotPath: readonly bigint[] | null = null;
+  private lastPosition: ParsedFuguePosition | null = null;
 
   constructor(
-    anchorPath: readonly bigint[],
-    runId: bigint,
-    initialSlotPath: readonly bigint[] = [SLOT_MID],
+    prefixCoords: readonly bigint[],
+    prefixBursts: readonly bigint[],
   ) {
-    formatPosition({ anchorPath, runId, slotPath: initialSlotPath });
-
-    this.anchorPath = clonePath(anchorPath);
-    this.runId = runId;
-    this.prefix = formatRunPrefix(this.anchorPath, runId);
-    this.initialSlotPath = clonePath(initialSlotPath);
-  }
-
-  next(): FuguePosition {
-    if (this.lastSlotPath === null) {
-      this.lastSlotPath = clonePath(this.initialSlotPath);
-      return formatPosition({
-        anchorPath: this.anchorPath,
-        runId: this.runId,
-        slotPath: this.lastSlotPath,
-      });
-    }
-
-    const nextSlotPath = nextSequentialPathAfter(
-      this.lastSlotPath,
-      RUN_SLOT_STEP,
-      SLOT_MAX,
-      SLOT_MID,
-      MAX_SLOT_PATH_DEPTH,
-    );
-    if (nextSlotPath === null) {
-      throw new SlotExhaustedError(
-        `Cannot allocate next position within run ${this.prefix}: slotPath depth exceeds ${MAX_SLOT_PATH_DEPTH}`,
+    if (prefixCoords.length !== prefixBursts.length) {
+      throw new InvalidPositionError(
+        `burst prefixes must satisfy coords.length = bursts.length, got ${prefixCoords.length} coords and ${prefixBursts.length} bursts`,
       );
     }
 
-    this.lastSlotPath = nextSlotPath;
-    return formatPosition({
-      anchorPath: this.anchorPath,
-      runId: this.runId,
-      slotPath: this.lastSlotPath,
+    if (prefixBursts.length === 0) {
+      throw new InvalidPositionError(
+        "burst prefixes must contain at least 1 burst token",
+      );
+    }
+
+    if (prefixBursts.length > MAX_BURST_DEPTH) {
+      throw new InvalidPositionError(
+        `burst depth must be <= ${MAX_BURST_DEPTH}, got ${prefixBursts.length}`,
+      );
+    }
+
+    const sample = formatPosition({
+      coords: [...prefixCoords, NESTED_COORD_MID],
+      bursts: prefixBursts,
     });
+
+    this.prefixCoords = clonePath(prefixCoords);
+    this.prefixBursts = clonePath(prefixBursts);
+    this.continuationBurst = prefixBursts[prefixBursts.length - 1]!;
+    this.prefix = sample.slice(0, sample.lastIndexOf(SEPARATOR));
+  }
+
+  next(): FuguePosition {
+    if (this.lastPosition === null) {
+      this.lastPosition = {
+        coords: [...this.prefixCoords, NESTED_COORD_MID],
+        bursts: clonePath(this.prefixBursts),
+      };
+      return formatPosition(this.lastPosition);
+    }
+
+    const coords = [...this.lastPosition.coords];
+    const bursts = [...this.lastPosition.bursts];
+    const lastCoordIndex = coords.length - 1;
+    const nextCoord = nextSequentialCoordAfter(coords[lastCoordIndex]!);
+
+    if (nextCoord !== null) {
+      coords[lastCoordIndex] = nextCoord;
+      this.lastPosition = { coords, bursts };
+      return formatPosition(this.lastPosition);
+    }
+
+    if (bursts.length >= MAX_BURST_DEPTH) {
+      throw new CoordSpaceExhaustedError(
+        `Cannot continue burst ${this.prefix}: burst depth exceeds ${MAX_BURST_DEPTH}`,
+      );
+    }
+
+    bursts.push(this.continuationBurst);
+    coords.push(NESTED_COORD_MID);
+    this.lastPosition = { coords, bursts };
+    return formatPosition(this.lastPosition);
   }
 }
 
@@ -182,78 +166,48 @@ export class Fugue {
     left: FuguePosition | null,
     right: FuguePosition | null,
   ): FuguePosition {
-    const [parsedLeft, parsedRight] = this.parseBounds(left, right);
-
-    if (
-      parsedLeft !== null &&
-      parsedRight !== null &&
-      isSameRun(parsedLeft, parsedRight)
-    ) {
-      const slotPath = this.pathBetween(
-        parsedLeft.slotPath,
-        parsedRight.slotPath,
-        SLOT_MIN,
-        SLOT_MAX,
-        MAX_SLOT_PATH_DEPTH,
-      );
-
-      if (slotPath === null) {
-        throw new SlotExhaustedError(
-          `No slot space between ${left} and ${right} inside run ${formatRunPrefix(parsedLeft.anchorPath, parsedLeft.runId)}`,
-        );
-      }
-
-      return formatPosition({
-        anchorPath: parsedLeft.anchorPath,
-        runId: parsedLeft.runId,
-        slotPath,
-      });
-    }
-
-    try {
-      return this.startRunFromBounds(parsedLeft, parsedRight).next();
-    } catch (error) {
-      if (!(error instanceof RunPrefixExhaustedError)) {
-        throw error;
-      }
-
-      if (parsedLeft !== null && parsedRight === null) {
-        return this.appendInsideRun(parsedLeft);
-      }
-
-      if (parsedLeft === null && parsedRight !== null) {
-        return this.prependInsideRun(parsedRight);
-      }
-
-      throw error;
-    }
+    return this.startBurst(left, right).next();
   }
 
-  startRun(
+  startBurst(
     left: FuguePosition | null,
     right: FuguePosition | null,
-  ): { next(): FuguePosition } {
+  ): FugueBurst {
     const [parsedLeft, parsedRight] = this.parseBounds(left, right);
 
+    if (parsedLeft === null && parsedRight === null) {
+      return new FugueBurst([TOP_COORD_MID], [this.randomBurstToken()]);
+    }
+
     if (
-      parsedLeft !== null &&
       parsedRight !== null &&
-      isSameRun(parsedLeft, parsedRight)
+      (parsedLeft === null || isPositionPrefix(parsedLeft, parsedRight))
     ) {
-      throw new RunPrefixExhaustedError(
-        "Cannot start a new independent run between two keys in the same run. Use between(left, right) for single inserts.",
+      return this.startBurstFromAncestor(toLeftAncestor(parsedRight));
+    }
+
+    return this.startBurstFromAncestor(parsedLeft!);
+  }
+
+  startBurstAfter(position: FuguePosition): FugueBurst {
+    return this.startBurst(position, null);
+  }
+
+  startBurstBefore(position: FuguePosition): FugueBurst {
+    return this.startBurst(null, position);
+  }
+
+  private startBurstFromAncestor(ancestor: ParsedFuguePosition) {
+    if (ancestor.bursts.length >= MAX_BURST_DEPTH) {
+      throw new BurstSpaceExhaustedError(
+        `Cannot open another nested burst: burst depth exceeds ${MAX_BURST_DEPTH}`,
       );
     }
 
-    return this.startRunFromBounds(parsedLeft, parsedRight);
-  }
-
-  startRunAfter(position: FuguePosition): { next(): FuguePosition } {
-    return this.startRun(position, null);
-  }
-
-  startRunBefore(position: FuguePosition): { next(): FuguePosition } {
-    return this.startRun(null, position);
+    return new FugueBurst(ancestor.coords, [
+      ...ancestor.bursts,
+      this.randomBurstToken(),
+    ]);
   }
 
   private parseBounds(
@@ -284,381 +238,8 @@ export class Fugue {
     return parsePosition(value);
   }
 
-  private startRunFromBounds(
-    left: ParsedFuguePosition | null,
-    right: ParsedFuguePosition | null,
-  ) {
-    if (left === null && right === null) {
-      return new FugueRun([ANCHOR_MID], this.randomBetween(RUN_MIN, RUN_MAX));
-    }
-
-    if (left !== null && right !== null) {
-      const anchorOrder = comparePaths(left.anchorPath, right.anchorPath);
-
-      if (anchorOrder === 0) {
-        if (left.runId + 1n > right.runId - 1n) {
-          throw new RunPrefixExhaustedError(
-            `No runId space available at anchorPath ${left.anchorPath.join("~")} between ${left.runId} and ${right.runId}`,
-          );
-        }
-
-        return new FugueRun(
-          left.anchorPath,
-          this.randomBetween(left.runId + 1n, right.runId - 1n),
-        );
-      }
-
-      const freshAnchorPath = this.pathBetween(
-        left.anchorPath,
-        right.anchorPath,
-        ANCHOR_MIN,
-        ANCHOR_MAX,
-        MAX_ANCHOR_PATH_DEPTH,
-      );
-      if (freshAnchorPath !== null) {
-        return new FugueRun(
-          freshAnchorPath,
-          this.randomBetween(RUN_MIN, RUN_MAX),
-        );
-      }
-
-      const candidates: RunIdCandidate[] = [];
-      const leftCandidate = this.getRunIdCandidate(
-        left.anchorPath,
-        left.runId + 1n,
-        RUN_MAX,
-      );
-      if (leftCandidate !== null) {
-        candidates.push(leftCandidate);
-      }
-
-      const rightCandidate = this.getRunIdCandidate(
-        right.anchorPath,
-        RUN_MIN,
-        right.runId - 1n,
-      );
-      if (rightCandidate !== null) {
-        candidates.push(rightCandidate);
-      }
-
-      if (candidates.length === 0) {
-        throw new RunPrefixExhaustedError(
-          `No run-prefix space between ${formatRunPrefix(left.anchorPath, left.runId)} and ${formatRunPrefix(right.anchorPath, right.runId)}`,
-        );
-      }
-
-      const candidate = this.pickRunIdCandidate(candidates);
-      return new FugueRun(
-        candidate.anchorPath,
-        this.randomBetween(candidate.minRunId, candidate.maxRunId),
-      );
-    }
-
-    if (left !== null) {
-      const freshAnchorPath = this.randomPathAfter(
-        left.anchorPath,
-        ANCHOR_MIN,
-        ANCHOR_MAX,
-        MAX_ANCHOR_PATH_DEPTH,
-      );
-      if (freshAnchorPath !== null) {
-        return new FugueRun(
-          freshAnchorPath,
-          this.randomBetween(RUN_MIN, RUN_MAX),
-        );
-      }
-
-      if (left.runId < RUN_MAX) {
-        return new FugueRun(
-          left.anchorPath,
-          this.randomBetween(left.runId + 1n, RUN_MAX),
-        );
-      }
-
-      throw new RunPrefixExhaustedError(
-        `No run-prefix space after ${formatRunPrefix(left.anchorPath, left.runId)}`,
-      );
-    }
-
-    const parsedRight = right!;
-    const freshAnchorPath = this.randomPathBefore(
-      parsedRight.anchorPath,
-      ANCHOR_MIN,
-      ANCHOR_MAX,
-    );
-    if (freshAnchorPath !== null) {
-      return new FugueRun(
-        freshAnchorPath,
-        this.randomBetween(RUN_MIN, RUN_MAX),
-      );
-    }
-
-    if (parsedRight.runId > RUN_MIN) {
-      return new FugueRun(
-        parsedRight.anchorPath,
-        this.randomBetween(RUN_MIN, parsedRight.runId - 1n),
-      );
-    }
-
-    throw new RunPrefixExhaustedError(
-      `No run-prefix space before ${formatRunPrefix(parsedRight.anchorPath, parsedRight.runId)}`,
-    );
-  }
-
-  private getRunIdCandidate(
-    anchorPath: readonly bigint[],
-    minRunId: bigint,
-    maxRunId: bigint,
-  ) {
-    if (minRunId > maxRunId) {
-      return null;
-    }
-
-    return {
-      anchorPath: clonePath(anchorPath),
-      minRunId,
-      maxRunId,
-      span: maxRunId - minRunId + 1n,
-    };
-  }
-
-  private pickRunIdCandidate(candidates: readonly RunIdCandidate[]) {
-    if (candidates.length === 1) {
-      return candidates[0]!;
-    }
-
-    let totalSpan = 0n;
-    for (const candidate of candidates) {
-      totalSpan += candidate.span;
-    }
-
-    let offset = this.randomBelow(totalSpan);
-    for (const candidate of candidates) {
-      if (offset < candidate.span) {
-        return candidate;
-      }
-
-      offset -= candidate.span;
-    }
-
-    return candidates[candidates.length - 1]!;
-  }
-
-  private appendInsideRun(left: ParsedFuguePosition) {
-    const slotPath = this.randomPathAfter(
-      left.slotPath,
-      SLOT_MIN,
-      SLOT_MAX,
-      MAX_SLOT_PATH_DEPTH,
-    );
-    if (slotPath === null) {
-      throw new SlotExhaustedError(
-        `No slot space after ${formatPosition(left)} in run ${formatRunPrefix(left.anchorPath, left.runId)}`,
-      );
-    }
-
-    return formatPosition({
-      anchorPath: left.anchorPath,
-      runId: left.runId,
-      slotPath,
-    });
-  }
-
-  private prependInsideRun(right: ParsedFuguePosition) {
-    const slotPath = this.randomPathBefore(right.slotPath, SLOT_MIN, SLOT_MAX);
-    if (slotPath === null) {
-      throw new SlotExhaustedError(
-        `No slot space before ${formatPosition(right)} in run ${formatRunPrefix(right.anchorPath, right.runId)}`,
-      );
-    }
-
-    return formatPosition({
-      anchorPath: right.anchorPath,
-      runId: right.runId,
-      slotPath,
-    });
-  }
-
-  private pathBetween(
-    left: readonly bigint[],
-    right: readonly bigint[],
-    minValue: bigint,
-    maxValue: bigint,
-    maxDepth: number,
-  ) {
-    const prefix: bigint[] = [];
-    let index = 0;
-
-    for (;;) {
-      const leftHasValue = index < left.length;
-      const rightHasValue = index < right.length;
-
-      if (!leftHasValue && !rightHasValue) {
-        if (prefix.length >= maxDepth) {
-          return null;
-        }
-
-        prefix.push(this.randomBetween(minValue, maxValue));
-        return prefix;
-      }
-
-      if (!leftHasValue) {
-        const rightValue = right[index]!;
-
-        if (rightValue > minValue) {
-          if (prefix.length >= maxDepth) {
-            return null;
-          }
-
-          prefix.push(this.randomBetween(minValue, rightValue - 1n));
-          return prefix;
-        }
-
-        const tail = right.slice(index + 1);
-        if (tail.length === 0) {
-          return null;
-        }
-
-        if (prefix.length >= maxDepth) {
-          return null;
-        }
-
-        const deeper = this.randomPathBefore(tail, minValue, maxValue);
-        if (
-          deeper !== null &&
-          prefix.length + 1 + deeper.length <= maxDepth &&
-          this.randomBelow(2n) === 1n
-        ) {
-          prefix.push(minValue, ...deeper);
-          return prefix;
-        }
-
-        prefix.push(minValue);
-        return prefix;
-      }
-
-      if (!rightHasValue) {
-        const leftValue = left[index]!;
-
-        if (leftValue < maxValue) {
-          if (prefix.length >= maxDepth) {
-            return null;
-          }
-
-          prefix.push(this.randomBetween(leftValue + 1n, maxValue));
-          return prefix;
-        }
-
-        if (prefix.length >= maxDepth) {
-          return null;
-        }
-
-        prefix.push(maxValue);
-        index++;
-        continue;
-      }
-
-      const leftValue = left[index]!;
-      const rightValue = right[index]!;
-
-      if (leftValue === rightValue) {
-        if (prefix.length >= maxDepth) {
-          return null;
-        }
-
-        prefix.push(leftValue);
-        index++;
-        continue;
-      }
-
-      const gap = rightValue - leftValue;
-      if (gap >= 2n) {
-        if (prefix.length >= maxDepth) {
-          return null;
-        }
-
-        prefix.push(this.randomBetween(leftValue + 1n, rightValue - 1n));
-        return prefix;
-      }
-
-      if (prefix.length >= maxDepth) {
-        return null;
-      }
-
-      prefix.push(leftValue);
-      index++;
-    }
-  }
-
-  private randomPathAfter(
-    left: readonly bigint[],
-    minValue: bigint,
-    maxValue: bigint,
-    maxDepth: number,
-  ) {
-    const prefix: bigint[] = [];
-
-    for (const value of left) {
-      if (value < maxValue) {
-        prefix.push(this.randomBetween(value + 1n, maxValue));
-        return prefix;
-      }
-
-      if (prefix.length >= maxDepth) {
-        return null;
-      }
-
-      prefix.push(maxValue);
-    }
-
-    if (prefix.length >= maxDepth) {
-      return null;
-    }
-
-    prefix.push(this.randomBetween(minValue, maxValue));
-    return prefix;
-  }
-
-  private randomPathBefore(
-    right: readonly bigint[],
-    minValue: bigint,
-    _maxValue: bigint,
-  ): bigint[] | null {
-    if (right.length === 0) {
-      return null;
-    }
-
-    let index = 0;
-    while (index < right.length && right[index] === minValue) {
-      index++;
-    }
-
-    let result: bigint[] | null;
-    let unwindLevels: number;
-
-    if (index === right.length) {
-      if (right.length === 1) {
-        return null;
-      }
-
-      result = null;
-      unwindLevels = right.length - 1;
-    } else {
-      const rightValue = right[index]!;
-      result = [this.randomBetween(minValue, rightValue - 1n)];
-      unwindLevels = index;
-    }
-
-    for (let level = 0; level < unwindLevels; level++) {
-      const prefix = [minValue];
-      if (result !== null && this.randomBelow(2n) === 1n) {
-        prefix.push(...result);
-      }
-
-      result = prefix;
-    }
-
-    return result;
+  private randomBurstToken() {
+    return this.randomBetween(0n, BURST_ID_MAX);
   }
 
   private randomBelow(limit: bigint) {

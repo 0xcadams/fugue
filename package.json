@@ -1,7 +1,7 @@
 {
   "name": "fugue",
   "version": "3.0.0",
-  "description": "Run-anchored lexicographic ordering keys.",
+  "description": "Burst-oriented recursive lexicographic ordering keys.",
   "type": "module",
   "scripts": {
     "clean": "rm -rf dist node_modules coverage",

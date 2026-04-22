@@ -1,100 +1,63 @@
 import { bench, describe } from "vitest";
-import { Fugue, type FuguePosition } from "../src";
-import { ANCHOR_MAX, SLOT_MAX, formatPosition } from "../src/position";
+import { Fugue, FugueBurst } from "../src";
+import { NESTED_COORD_MAX_RIGHT, TOP_COORD_MID } from "../src/position";
 
-describe("benchmarks", () => {
-  bench("single", () => {
-    const fugue = new Fugue();
-    const first = fugue.first();
-    const second = fugue.after(first);
-    fugue.between(first, second);
-  });
+function makeDeterministicRandomBytes(seed: number) {
+  let state = seed >>> 0;
 
-  bench("run burst", () => {
-    const fugue = new Fugue();
-
-    const left = fugue.first();
-    const right = fugue.after(left);
-    const run = fugue.startRun(left, right);
-
-    run.next();
-    run.next();
-    run.next();
-  });
-
-  bench("multiple instances", () => {
-    const instances = Array.from({ length: 100 }, () => new Fugue());
-
-    let firstKey: FuguePosition | null = null;
-    let lastKey: FuguePosition | null = null;
-
-    const firstInstance = instances[0];
-    if (firstInstance) {
-      firstKey = firstInstance.first();
-      lastKey = firstInstance.after(firstKey);
+  return (byteLength: number) => {
+    const out = new Uint8Array(byteLength);
+    for (let index = 0; index < byteLength; index++) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      out[index] = state & 0xff;
     }
+    return out;
+  };
+}
 
-    let previousKey: FuguePosition | null = firstKey;
+describe("fugue", () => {
+  bench("flat burst", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(1) });
+    const burst = fugue.startBurst(null, null);
 
-    for (let j = 0; j < 10; j++) {
-      for (const instance of instances) {
-        const newPos = instance.between(previousKey, lastKey);
-        previousKey = instance.between(previousKey, newPos);
-      }
-    }
+    burst.next();
+    burst.next();
+    burst.next();
   });
 
-  bench("same-run deepens for adjacent slots", () => {
-    const fugue = new Fugue();
+  bench("nested burst in old gap", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(2) });
+    const burst = fugue.startBurst(null, null);
+    const left = burst.next();
+    const right = burst.next();
 
-    const left = formatPosition({
-      anchorPath: [12n],
-      runId: 34n,
-      slotPath: [50n],
-    });
-    const right = formatPosition({
-      anchorPath: [12n],
-      runId: 34n,
-      slotPath: [51n],
-    });
     fugue.between(left, right);
   });
 
-  bench("same-run deep zero-tail case", () => {
-    const fugue = new Fugue();
+  bench("concurrent sibling bursts", () => {
+    const seedA = new Fugue({ randomBytes: makeDeterministicRandomBytes(3) });
+    const left = seedA.first();
+    const right = seedA.after(left);
 
-    const left = formatPosition({
-      anchorPath: [12n],
-      runId: 34n,
-      slotPath: [50n],
-    });
-    const right = formatPosition({
-      anchorPath: [12n],
-      runId: 34n,
-      slotPath: [50n, 0n, 51n],
-    });
-    fugue.between(left, right);
+    const alice = new Fugue({ randomBytes: makeDeterministicRandomBytes(4) });
+    const bob = new Fugue({ randomBytes: makeDeterministicRandomBytes(5) });
+
+    alice.startBurst(left, right).next();
+    bob.startBurst(left, right).next();
   });
 
-  bench("append boundary uses same-run fallback", () => {
-    const fugue = new Fugue();
+  bench("burst continuation deepens at coord max", () => {
+    const burst = new FugueBurst([TOP_COORD_MID], [1n]);
+    const state = burst as unknown as {
+      lastPosition: { coords: bigint[]; bursts: bigint[] };
+    };
+    state.lastPosition = {
+      coords: [TOP_COORD_MID, NESTED_COORD_MAX_RIGHT],
+      bursts: [1n],
+    };
 
-    const left = formatPosition({
-      anchorPath: Array.from({ length: 64 }, () => ANCHOR_MAX),
-      runId: (1n << 96n) - 1n,
-      slotPath: [SLOT_MAX - 2n],
-    });
-    fugue.between(left, null);
-  });
-
-  bench("prepend boundary uses same-run fallback", () => {
-    const fugue = new Fugue();
-
-    const right = formatPosition({
-      anchorPath: [0n],
-      runId: 0n,
-      slotPath: [2n],
-    });
-    fugue.between(null, right);
+    burst.next();
   });
 });

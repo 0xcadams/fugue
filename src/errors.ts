@@ -13,8 +13,8 @@ export class InvalidBoundsError extends FugueError {}
 
 export class InvalidRandomSourceError extends FugueError {}
 
-export class SlotExhaustedError extends FugueError {}
+export class CoordSpaceExhaustedError extends FugueError {}
 
-export class RunPrefixExhaustedError extends FugueError {}
+export class BurstSpaceExhaustedError extends FugueError {}
 
 export class SecureRandomUnavailableError extends FugueError {}

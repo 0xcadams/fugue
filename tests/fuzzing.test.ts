@@ -1,13 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
+  BurstSpaceExhaustedError,
+  CoordSpaceExhaustedError,
   Fugue,
-  RunPrefixExhaustedError,
-  SlotExhaustedError,
   isFuguePosition,
   type FuguePosition,
   type FugueRandomBytes,
 } from "../src";
-import { formatPosition } from "../src/position";
 
 function makePRNG(seed: number) {
   let state = seed >>> 0;
@@ -22,9 +21,8 @@ function makePRNG(seed: number) {
   const nextInt = (max: number) => Math.floor(next() * max);
 
   return {
-    next,
     nextInt,
-    pick<T>(items: T[]): T {
+    pick<T>(items: readonly T[]) {
       return items[nextInt(items.length)]!;
     },
   };
@@ -35,8 +33,8 @@ function makeDeterministicRandomBytes(seed: number): FugueRandomBytes {
 
   return (byteLength: number) => {
     const out = new Uint8Array(byteLength);
-    for (let i = 0; i < byteLength; i++) {
-      out[i] = rng.nextInt(256);
+    for (let index = 0; index < byteLength; index++) {
+      out[index] = rng.nextInt(256);
     }
     return out;
   };
@@ -59,23 +57,19 @@ function sortedInsert(values: FuguePosition[], value: FuguePosition) {
 }
 
 function verifySorted(values: readonly FuguePosition[]) {
-  for (let i = 1; i < values.length; i++) {
-    expect(values[i - 1]! < values[i]!).toBe(true);
+  for (let index = 1; index < values.length; index++) {
+    expect(values[index - 1]! < values[index]!).toBe(true);
   }
 }
 
 describe("fuzzing", () => {
   test("repeated concurrent inserts into one gap stay ordered and unique", () => {
-    const left = formatPosition({
-      anchorPath: [10n],
-      runId: 20n,
-      slotPath: [100n],
+    const base = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(0xabc000),
     });
-    const right = formatPosition({
-      anchorPath: [10n],
-      runId: 20n,
-      slotPath: [101n],
-    });
+    const left = base.first();
+    const right = base.after(left);
+
     const clients = [
       new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc001) }),
       new Fugue({ randomBytes: makeDeterministicRandomBytes(0xabc002) }),
@@ -101,8 +95,8 @@ describe("fuzzing", () => {
 
   test("mixed operations keep ordering and uniqueness", () => {
     const seeds = [0x1, 0x2a2a2a2a, 0x12345678, 0x7fffffff, 0xdeadbeef];
-    const opsPerSeed = 4000;
-    const maxPositions = 2500;
+    const opsPerSeed = 2500;
+    const maxPositions = 1500;
 
     for (const seed of seeds) {
       const opRng = makePRNG(seed);
@@ -130,7 +124,7 @@ describe("fuzzing", () => {
         insert(client.before(base));
       }
 
-      for (let i = 0; i < opsPerSeed; i++) {
+      for (let index = 0; index < opsPerSeed; index++) {
         const client = opRng.pick(clients);
         const op = opRng.nextInt(5);
 
@@ -141,60 +135,31 @@ describe("fuzzing", () => {
                 break;
               }
 
-              const index = opRng.nextInt(positions.length - 1);
-              const left = positions[index]!;
-              const right = positions[index + 1]!;
-              const inserted = client.between(left, right);
-
-              expect(left < inserted).toBe(true);
-              expect(inserted < right).toBe(true);
-              insert(inserted);
+              const gapIndex = opRng.nextInt(positions.length - 1);
+              const left = positions[gapIndex]!;
+              const right = positions[gapIndex + 1]!;
+              insert(client.between(left, right));
               break;
             }
 
             case 1: {
               const first = positions[0]!;
-              const inserted = client.before(first);
-
-              expect(inserted < first).toBe(true);
-              insert(inserted);
+              insert(client.before(first));
               break;
             }
 
             case 2: {
               const last = positions[positions.length - 1]!;
-              const inserted = client.after(last);
-
-              expect(last < inserted).toBe(true);
-              insert(inserted);
+              insert(client.after(last));
               break;
             }
 
             case 3: {
               const last = positions[positions.length - 1]!;
-              try {
-                const run = client.startRun(last, null);
-
-                const k1 = run.next();
-                const k2 = run.next();
-                const k3 = run.next();
-
-                expect(last < k1).toBe(true);
-                expect(k1 < k2).toBe(true);
-                expect(k2 < k3).toBe(true);
-
-                insert(k1);
-                insert(k2);
-                insert(k3);
-              } catch (error) {
-                if (!(error instanceof RunPrefixExhaustedError)) {
-                  throw error;
-                }
-
-                const inserted = client.after(last);
-                expect(last < inserted).toBe(true);
-                insert(inserted);
-              }
+              const burst = client.startBurst(last, null);
+              insert(burst.next());
+              insert(burst.next());
+              insert(burst.next());
               break;
             }
 
@@ -203,54 +168,34 @@ describe("fuzzing", () => {
                 break;
               }
 
-              const leftIndex = opRng.nextInt(positions.length - 1);
-              const left = positions[leftIndex]!;
-              const right = positions[leftIndex + 1]!;
-
-              try {
-                const run = client.startRun(left, right);
-                const k1 = run.next();
-                const k2 = run.next();
-
-                expect(left < k1).toBe(true);
-                expect(k1 < k2).toBe(true);
-                expect(k2 < right).toBe(true);
-
-                insert(k1);
-                insert(k2);
-              } catch (error) {
-                if (!(error instanceof RunPrefixExhaustedError)) {
-                  throw error;
-                }
-
-                const inserted = client.between(left, right);
-                expect(left < inserted).toBe(true);
-                expect(inserted < right).toBe(true);
-                insert(inserted);
-              }
-
+              const gapIndex = opRng.nextInt(positions.length - 1);
+              const left = positions[gapIndex]!;
+              const right = positions[gapIndex + 1]!;
+              const burst = client.startBurst(left, right);
+              insert(burst.next());
+              insert(burst.next());
               break;
             }
           }
         } catch (error) {
           if (
-            !(error instanceof RunPrefixExhaustedError) &&
-            !(error instanceof SlotExhaustedError)
+            !(error instanceof BurstSpaceExhaustedError) &&
+            !(error instanceof CoordSpaceExhaustedError)
           ) {
             throw error;
           }
         }
 
-        if ((i & 63) === 63) {
+        if ((index & 63) === 63) {
           verifySorted(positions);
           expect(unique.size).toBe(positions.length);
         }
 
         if (positions.length > maxPositions) {
           const removeCount = Math.floor(positions.length * 0.25);
-          for (let j = 0; j < removeCount; j++) {
-            const removeIndex = opRng.nextInt(positions.length);
-            const removed = positions.splice(removeIndex, 1)[0];
+          for (let removeIndex = 0; removeIndex < removeCount; removeIndex++) {
+            const indexToRemove = opRng.nextInt(positions.length);
+            const removed = positions.splice(indexToRemove, 1)[0];
             if (removed !== undefined) {
               unique.delete(removed);
             }

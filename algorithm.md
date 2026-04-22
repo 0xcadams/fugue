@@ -1,217 +1,239 @@
 # Algorithm
 
-`fugue` v3 uses run-anchored lexicographic keys for ordered collaborative data.
+`fugue` v3 uses recursive burst paths.
 
-## Key forms
+The design goal is simple:
 
-Start with the simple shape:
+- plain lexicographic string sort equals logical order
+- clients generate keys locally
+- old keys never need rewriting
+- uninterrupted insertion bursts stay contiguous
+- later bursts can nest inside older text as fresh blocks
 
-`<anchor>!<runId>!<slot>`
+## Key shape
 
-When Fugue needs more precision, `anchor` and `slot` become paths:
+The serialized form is an alternating path:
 
-`<anchor>[~<subanchor>...]!<runId>!<slot>[~<subslot>...]`
+```text
+<topCoord>!<topBurst>!<coord>[!<burst>!<coord>]...
+```
 
-- `anchor` and each `subanchor`: 64-bit unsigned integer, base62 width 11
-- `runId`: 96-bit unsigned integer, base62 width 17
-- `slot` and each `subslot`: 64-bit unsigned integer, base62 width 11
-- `!` is the field separator
-- `~` is the path separator
-- maximum `anchorPath` depth: 64 segments
-- maximum `slotPath` depth: 64 segments
+Token widths:
 
-## Goals
+- `topCoord`: 11-char base62
+- `topBurst`: 6-char base62
+- nested `coord`: 6-char base62
+- nested `burst`: 5-char base62
+- separator: `!`
+- maximum burst depth: 64 burst tokens per key
 
-1. Plain lexicographic string sort equals logical list order.
-2. Any client can generate keys locally with no central allocator.
-3. Inserts before/after/between work without rewriting existing keys.
-4. Bursts stay contiguous and concurrent bursts do not braid item-by-item.
-5. Collision probability remains negligible in practice.
+Every external position:
+
+- starts with a coord token
+- ends with a coord token
+- contains exactly one more coord than burst tokens
+
+## Coord tokens and the hidden side bit
+
+Each coord encodes a local magnitude plus a hidden left/right side.
+
+Stored positions must end in a right-side coord. Left-side coords are internal only. They let `fugue` open a fresh burst immediately before a descendant without changing the visible key format.
+
+In the encoding, right-side coords are odd and the matching left-side coord is the preceding even value. So if a visible coord is `51`, its hidden left attachment point is `50`.
+
+A key may contain an even coord internally, but it may not end with one.
 
 ## Ordering semantics
 
 Sort is plain string compare.
 
-Why this works:
+This works because:
 
-1. Segments are fixed-width base62 components.
-2. `!` sorts before `~`, digits, and letters.
-3. Fields compare in order: `anchorPath`, then `runId`, then `slotPath`.
-4. Inside a path, segments compare left to right.
-5. If one path is a strict prefix of the other, the shorter path sorts first.
+1. tokens are fixed-width base62 at each depth
+2. `!` sorts before digits and letters
+3. tokens compare left to right
+4. if one key is a strict prefix of another, the shorter key sorts first
 
-Examples:
-
-```text
-07!abc!50 < 07!abc!50~60 < 07!abc!51
-07!abc!50 < 07~01!abc!50 < 08!abc!50
-```
-
-## Run model
-
-A run is one insertion burst (paste, uninterrupted typing, etc.).
-
-All items in one run share:
-
-`<anchorPath>!<runId>`
-
-Only the `slotPath` changes inside a run.
-That is the anti-braiding property: each run is one contiguous sorted block.
-
-## Constants
-
-- `ANCHOR_MIN = 0`
-- `ANCHOR_MAX = 2^64 - 1`
-- `ANCHOR_MID = 2^63`
-- `SLOT_MIN = 0`
-- `SLOT_MAX = 2^64 - 1`
-- `SLOT_MID = 2^63`
-- internal run stride = `2^48`
-- `MAX_ANCHOR_PATH_DEPTH = 64`
-- `MAX_SLOT_PATH_DEPTH = 64`
-
-## Why subanchors and subslots exist
-
-Most keys stay flat.
-
-Fugue only deepens a path when the current depth has no room:
-
-- `subanchors` appear when there is no room to place a fresh run between neighboring runs at the current anchor depth
-- `subslots` appear when there is no room to place an item between neighboring items in the same run at the current slot depth
-
-This keeps old keys stable while still making new space.
-
-## Core helper: `betweenPath(L, R)`
-
-`betweenPath(L, R)` returns a path strictly between two paths.
-
-Rule:
-
-1. Walk both paths left to right.
-2. If segments are equal, copy the shared segment and continue.
-3. At the first depth with a numeric gap, choose a segment value inside that open interval and stop.
-4. If there is no room at that depth, copy the exhausted prefix and descend one level deeper.
-5. If the gap is mathematically impossible, return `null`.
-
-This helper is used for:
-
-- `anchorPath` allocation between runs
-- `slotPath` allocation inside a run
-
-## Operations
-
-### 1) Start a new run between `L` and `R`
-
-Inputs:
-
-- `L` may be missing (insert at beginning)
-- `R` may be missing (insert at end)
-- if both exist, require `L < R`
-
-Algorithm:
-
-1. Parse bounds into `(anchorPath, runId, slotPath)`.
-2. If both bounds are missing, choose:
-   - `anchorPath = [ANCHOR_MID]`
-   - `runId = random96()`
-   - first `slotPath = [SLOT_MID]`
-3. If both bounds have the same `anchorPath`, allocate only by `runId`:
-   - require `left.runId < newRunId < right.runId`
-4. If the bounds have different `anchorPath`s, try:
-   - `anchorPath = betweenPath(left.anchorPath, right.anchorPath)`
-   - `runId = random96()`
-5. If there is no `anchorPath` space, pack under an existing neighboring `anchorPath`:
-   - left candidate: same `anchorPath` with `runId > left.runId`
-   - right candidate: same `anchorPath` with `runId < right.runId`
-6. If neither candidate has `runId` space, fail with `RunPrefixExhaustedError`.
-
-### 2) `run.next()` inside one run
-
-Given run prefix `(anchorPath, runId)`:
-
-- first `run.next()`: `slotPath = [SLOT_MID]`
-- later `run.next()`: advance the last slot segment by the internal stride when possible
-- if the current segment is full, clamp to `SLOT_MAX`
-- if the segment is already `SLOT_MAX`, append a new `SLOT_MID` child segment
-
-So a long burst can grow like:
+Conceptual example:
 
 ```text
-[MID]
-[MID + stride]
-...
-[MAX]
-[MAX~MID]
-[MAX~MID + stride]
+50!A!51 < 50!A!51!B!50!C!51 < 50!A!51!B!51
 ```
 
-`run.next()` only fails when the slot path is already at depth 64 and every segment is exhausted.
+Actual wire values are opaque fixed-width base62, but the ordering story is the same.
 
-### 3) Insert between two items in the same run
+## Burst model
 
-If both neighbors share `(anchorPath, runId)`, insert using slot paths:
+A burst is one uninterrupted insertion episode: typing, paste, drag-copy, etc.
 
-1. call `betweenPath(left.slotPath, right.slotPath)`
-2. if it succeeds, emit `<anchorPath>!<runId>!<slotPath>`
-3. if it returns `null`, fail with `SlotExhaustedError`
+Public API:
+
+- `between(left, right)` -> one-item burst
+- `startBurst(left, right)` -> explicit burst handle
+- `burst.next()` -> next item in that burst
+
+Each burst owns a prefix that ends in a burst token.
+All items from that burst sort under that prefix, so the burst forms one contiguous block.
+
+## Starting a fresh burst
+
+`startBurst(left, right)` uses three cases.
+
+### Case 1: empty document
+
+If `left` and `right` are both missing:
+
+1. use the fixed middle top coord
+2. choose a random top burst token
+3. return a burst prefix `<topCoord>!<topBurst>`
+
+The first `next()` call appends the middle nested coord.
+
+### Case 2: insert before `right`
+
+Use this when `left` is missing or `right` is a descendant of `left`.
+
+1. parse `right`
+2. replace its final right-side coord with the matching left-side coord
+3. append a fresh burst token
+
+This creates a subtree that sorts before `right` but stays inside the requested gap.
+
+### Case 3: all other gaps
+
+Create a fresh burst as a right descendant of `left`:
+
+1. parse `left`
+2. append a fresh burst token
+3. return that new burst prefix
+
+Because descendants sort after their ancestor but before the next lexicographically larger sibling region, this stays within the requested gap.
+
+## `between(left, right)`
+
+`between(left, right)` is just:
+
+```ts
+startBurst(left, right).next();
+```
+
+So a one-off insert is treated as a size-1 burst.
+
+## `burst.next()`
+
+Given a burst prefix ending in a burst token:
+
+```text
+...!<burst>
+```
+
+`next()` works like this.
+
+### First item
+
+Append the middle nested coord:
+
+```text
+...!<burst>!<midCoord>
+```
+
+### Later items in the same local coord range
+
+Advance the trailing coord by a fixed stride.
+
+In the implementation:
+
+- nested coords are 6-char base62
+- the raw coord stride is `2^16`
+- raw right-sided coords stay odd, so stepping preserves the side bit
+
+### When the trailing coord reaches max
+
+Deepen under the same burst:
+
+1. append the same burst token again
+2. append a fresh middle coord
+
+Conceptually:
+
+```text
+50!A!MAX
+50!A!MAX!A!MID
+50!A!MAX!A!MID+step
+```
+
+That lets one long burst keep going without becoming a new burst.
+
+## Fresh nested bursts inside old text
+
+This is the key v3 property.
 
 Example:
 
 ```text
-...!50 < ...!50~50 < ...!51
+50!A!50
+50!A!60
 ```
 
-### 4) Open-edge fallback when fresh run-prefix allocation fails
+Later insert a fresh burst between them:
 
-`between(left, null)` and `between(null, right)` first try to create a fresh run.
+```text
+50!A!50
+50!A!50!B!50
+50!A!50!B!60
+50!A!60
+```
 
-If that fails at the boundary:
+So the later burst gets its own identity `B` and stays contiguous.
 
-- append inside `left`'s run for `between(left, null)`
-- prepend inside `right`'s run for `between(null, right)`
+## Concurrent bursts in the same gap
 
-This preserves correct ordering even when there is no fresh run-prefix space at that edge.
+If two clients start bursts in the same gap, each gets a different random burst token.
 
-## Exhaustion and packing
+Example:
 
-### Slot-path exhaustion (inside one run)
+```text
+50!A!50
+50!A!50!B!50
+50!A!50!B!60
+50!A!50!C!50
+50!A!50!C!60
+50!A!60
+```
 
-Use deeper `slotPath` segments.
-If the gap is impossible or the slot path depth cap is hit, throw `SlotExhaustedError`.
+The result is `BBCC` or `CCBB`, not `BCBC`.
 
-### Anchor-path exhaustion (between runs)
+## Randomness and collision model
 
-Use deeper `anchorPath` segments.
-If there is still no `anchorPath` space, pack under a neighboring `anchorPath` and order runs with `runId`.
-If there is no valid `runId` interval either, throw `RunPrefixExhaustedError`.
+Burst tokens are sampled from a CSPRNG by default.
 
-## Why explicit errors still exist
+Important detail:
 
-Variable-depth paths make the space much denser, but not perfectly dense.
+- top-level bursts serialize to width 6
+- nested bursts serialize to width 5
+- generated burst ids fit the nested width so a burst can reuse its own token when it deepens
 
-Examples of impossible gaps:
+Collisions are probabilistic rather than coordinated. In practice the chance is negligible with a CSPRNG.
 
-- there is no path strictly between `p` and `p~0`
-- there is no fresh run prefix between identical `anchorPath`s with adjacent `runId`s
+## Exhaustion and explicit errors
 
-Fugue reports those cases explicitly instead of generating an incorrect key.
+`fugue` still has hard limits.
 
-## Collision model
+### `BurstSpaceExhaustedError`
 
-Default random source is CSPRNG (`crypto.getRandomValues`).
-Custom RNG injection is supported for environments without Web Crypto.
+Thrown when a fresh nested burst would exceed the 64-burst depth cap.
 
-When multiple valid keys exist, Fugue samples one randomly for:
+### `CoordSpaceExhaustedError`
 
-- `runId` allocation
-- bounded `betweenPath(...)` choices
-- edge fallback choices
+Thrown when `burst.next()` would need to deepen again but the key is already at the burst depth cap.
 
-This keeps collisions probabilistic and negligible in practice.
+These errors are explicit on purpose.
+`fugue` does not silently generate incorrect keys.
 
 ## Complexity
 
-- normal key generation: typically `O(1)`
-- bounded path insertion: `O(d)` where `d` is added path depth
-- parse/format: `O(k)` where `k` is path segment count
-- key length: `41` chars in the flat form, plus `12` chars for each extra path segment in either path field
+- common insert: typically `O(1)`
+- `burst.next()`: typically `O(1)`
+- parse/format/compare: `O(d)` where `d` is burst depth
+- flat key length: 25 chars
+- each extra nested burst level adds one `!burst!coord` pair, about 13 chars
