@@ -107,12 +107,12 @@ function ensureDependencies(cwd) {
     return null;
   }
 
-  const frozenInstall = run("pnpm", ["install", "--frozen-lockfile"], cwd);
+  const frozenInstall = run("bun", ["install", "--frozen-lockfile"], cwd);
   if (frozenInstall.exitCode === 0) {
     return frozenInstall;
   }
 
-  const relaxedInstall = run("pnpm", ["install", "--no-frozen-lockfile"], cwd);
+  const relaxedInstall = run("bun", ["install"], cwd);
 
   return {
     command: relaxedInstall.command,
@@ -585,10 +585,10 @@ function collectBranchMetrics(cwd, label) {
   );
 
   const install = ensureDependencies(cwd);
-  const test = run("pnpm", ["test"], cwd);
-  const typecheck = run("pnpm", ["test:types"], cwd);
-  const build = run("pnpm", ["build"], cwd);
-  const size = run("pnpm", ["size"], cwd);
+  const test = run("bun", ["run", "test"], cwd);
+  const typecheck = run("bun", ["run", "test:types"], cwd);
+  const build = run("bun", ["run", "build"], cwd);
+  const size = run("bun", ["run", "size"], cwd);
 
   return {
     label,
@@ -658,7 +658,7 @@ async function main() {
     generatedAt: new Date().toISOString(),
     environment: {
       node: process.version,
-      pnpm: runOrThrow("pnpm", ["--version"], currentDir).stdout.trim(),
+      bun: runOrThrow("bun", ["--version"], currentDir).stdout.trim(),
     },
     refs: {
       baseRef,

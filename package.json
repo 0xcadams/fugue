@@ -3,18 +3,24 @@
   "version": "3.0.0",
   "description": "Burst-oriented recursive lexicographic ordering keys.",
   "type": "module",
+  "packageManager": "bun@1.3.13",
   "scripts": {
     "clean": "rm -rf dist node_modules coverage",
     "build": "tsup src/index.ts --format cjs,esm --dts",
     "compare:branches": "node scripts/compare-branches.mjs",
     "format": "prettier --write .",
-    "release": "pnpm run build && pnpm publish",
+    "prepack": "bun run build",
+    "release": "bun publish",
     "test": "vitest run --typecheck --coverage",
     "test:types": "cd tests && tsc --noEmit",
     "test:bench": "vitest bench",
     "test:ui": "vitest --ui",
     "size": "size-limit"
   },
+  "workspaces": [
+    ".",
+    "benchmarks"
+  ],
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -59,14 +65,11 @@
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.2.4"
   },
-  "pnpm": {
-    "ignoredBuiltDependencies": [
-      "esbuild"
-    ],
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "size-limit": [
     {
       "path": "dist/index.js"
