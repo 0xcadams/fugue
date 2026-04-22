@@ -23,6 +23,7 @@ import {
   formatPreparedPositionUnchecked,
   isPreparedPositionPrefix,
   preparePosition,
+  toPreparedLeftAncestor,
   type FuguePosition,
   type PreparedFuguePath,
   type PreparedFuguePosition,
@@ -159,7 +160,7 @@ function stemFromCurrentPosition(
   return formatPreparedPrefixStem({
     topCoord,
     bursts,
-    nestedCoords: nestedCoords.slice(0, -1),
+    nestedCoords,
   });
 }
 
@@ -224,38 +225,31 @@ function midpointPositionAtSameDepth(
   left: PreparedFuguePosition,
   right: PreparedFuguePosition,
 ): PreparedFuguePosition | null {
-  if (
-    left.topCoord !== right.topCoord ||
-    left.bursts.length !== right.bursts.length ||
-    left.nestedCoords.length !== right.nestedCoords.length
-  ) {
+  if (left.topCoord !== right.topCoord || left.depth !== right.depth) {
     return null;
   }
 
-  for (let depth = 0; depth < left.bursts.length; depth++) {
+  for (let depth = 0; depth < left.depth; depth++) {
     if (
       left.bursts[depth] !== right.bursts[depth] ||
-      (depth < left.bursts.length - 1 &&
+      (depth < left.depth - 1 &&
         left.nestedCoords[depth] !== right.nestedCoords[depth])
     ) {
       return null;
     }
   }
 
-  const midpoint = midpointRightCoordBetween(
-    left.nestedCoords[left.nestedCoords.length - 1]!,
-    right.nestedCoords[right.nestedCoords.length - 1]!,
-  );
+  const midpoint = midpointRightCoordBetween(left.finalCoord, right.finalCoord);
   if (midpoint === null) {
     return null;
   }
 
-  const nestedCoords = [...left.nestedCoords];
-  nestedCoords[nestedCoords.length - 1] = midpoint;
   const prepared: PreparedFuguePosition = {
     topCoord: left.topCoord,
-    bursts: [...left.bursts],
-    nestedCoords,
+    bursts: left.bursts,
+    nestedCoords: left.nestedCoords,
+    finalCoord: midpoint,
+    depth: left.depth,
     text: "" as FuguePosition,
   };
   const text = formatPreparedPositionUnchecked(prepared);
@@ -265,19 +259,26 @@ function midpointPositionAtSameDepth(
   };
 }
 
+function preparedCoordAtDepth(position: PreparedFuguePath, depth: number) {
+  return depth < position.depth - 1
+    ? position.nestedCoords[depth]!
+    : position.finalCoord;
+}
+
 function isPreparedPrefixAtDepth(
   position: PreparedFuguePath,
   depth: number,
   value: PreparedFuguePath,
 ) {
-  if (position.topCoord !== value.topCoord || depth > value.bursts.length) {
+  if (position.topCoord !== value.topCoord || depth > value.depth) {
     return false;
   }
 
   for (let index = 0; index < depth; index++) {
     if (
       position.bursts[index] !== value.bursts[index] ||
-      position.nestedCoords[index] !== value.nestedCoords[index]
+      preparedCoordAtDepth(position, index) !==
+        preparedCoordAtDepth(value, index)
     ) {
       return false;
     }
@@ -299,7 +300,7 @@ function comparePreparedPrefixAtDepth(
     return 1;
   }
 
-  const sharedDepth = Math.min(depth, right.bursts.length);
+  const sharedDepth = Math.min(depth, right.depth);
   for (let index = 0; index < sharedDepth; index++) {
     const leftBurst = position.bursts[index]!;
     const rightBurst = right.bursts[index]!;
@@ -311,8 +312,8 @@ function comparePreparedPrefixAtDepth(
       return 1;
     }
 
-    const leftCoord = position.nestedCoords[index]!;
-    const rightCoord = right.nestedCoords[index]!;
+    const leftCoord = preparedCoordAtDepth(position, index);
+    const rightCoord = preparedCoordAtDepth(right, index);
     if (leftCoord < rightCoord) {
       return -1;
     }
@@ -322,11 +323,11 @@ function comparePreparedPrefixAtDepth(
     }
   }
 
-  if (depth < right.bursts.length) {
+  if (depth < right.depth) {
     return -1;
   }
 
-  if (depth > right.bursts.length) {
+  if (depth > right.depth) {
     return 1;
   }
 
@@ -337,9 +338,15 @@ function prefixNestedCoords(
   position: PreparedFuguePath,
   depth: number,
 ): readonly number[] {
-  return depth === position.nestedCoords.length
-    ? position.nestedCoords
-    : position.nestedCoords.slice(0, depth);
+  if (depth === 0) {
+    return [];
+  }
+
+  if (depth < position.depth) {
+    return position.nestedCoords.slice(0, depth);
+  }
+
+  return [...position.nestedCoords, position.finalCoord];
 }
 
 export class FugueBurst {
@@ -353,6 +360,7 @@ export class FugueBurst {
 
   private currentNestedCoords: number[] | null = null;
   private currentBursts: number[] | null = null;
+  private currentFinalCoord: number | null = null;
   private currentStem: string | null = null;
 
   constructor(
@@ -411,15 +419,13 @@ export class FugueBurst {
   next(): FuguePosition {
     if (this.currentNestedCoords === null || this.currentBursts === null) {
       this.currentBursts = cloneNumberPath(this.prefixBursts);
-      this.currentNestedCoords = [
-        ...this.prefixNestedCoords,
-        NESTED_COORD_MID_NUMBER,
-      ];
+      this.currentNestedCoords = cloneNumberPath(this.prefixNestedCoords);
+      this.currentFinalCoord = NESTED_COORD_MID_NUMBER;
       this.currentStem = this.prefixStem;
       return this.emitCurrentPosition();
     }
 
-    const lastCoordIndex = this.currentNestedCoords.length - 1;
+    const currentFinalCoord = this.currentFinalCoord!;
     if (this.currentStem === null) {
       this.currentStem = stemFromCurrentPosition(
         this.prefixTopCoord,
@@ -427,12 +433,10 @@ export class FugueBurst {
         this.currentNestedCoords,
       );
     }
-    const nextCoord = nextSequentialNestedCoordAfter(
-      this.currentNestedCoords[lastCoordIndex]!,
-    );
+    const nextCoord = nextSequentialNestedCoordAfter(currentFinalCoord);
 
     if (nextCoord !== null) {
-      this.currentNestedCoords[lastCoordIndex] = nextCoord;
+      this.currentFinalCoord = nextCoord;
       return this.emitCurrentPosition();
     }
 
@@ -442,11 +446,12 @@ export class FugueBurst {
       );
     }
 
-    const previousFinalCoord = this.currentNestedCoords[lastCoordIndex]!;
+    const previousFinalCoord = currentFinalCoord;
     const previousDepth = this.currentBursts.length;
     this.currentStem += `${encode62Number(previousFinalCoord, coordWidthAtDepth(previousDepth))}${SEPARATOR}${encode62Number(this.continuationBurst, burstWidthAtDepth(previousDepth))}${SEPARATOR}`;
+    this.currentNestedCoords.push(previousFinalCoord);
     this.currentBursts.push(this.continuationBurst);
-    this.currentNestedCoords.push(NESTED_COORD_MID_NUMBER);
+    this.currentFinalCoord = NESTED_COORD_MID_NUMBER;
     return this.emitCurrentPosition();
   }
 
@@ -454,7 +459,7 @@ export class FugueBurst {
     const currentNestedCoords = this.currentNestedCoords!;
     const currentBursts = this.currentBursts!;
     const text =
-      `${this.currentStem!}${encode62Number(currentNestedCoords[currentNestedCoords.length - 1]!, coordWidthAtDepth(currentNestedCoords.length))}` as FuguePosition;
+      `${this.currentStem!}${encode62Number(this.currentFinalCoord!, coordWidthAtDepth(currentBursts.length))}` as FuguePosition;
 
     if (this.rememberPosition === undefined) {
       return text;
@@ -462,8 +467,10 @@ export class FugueBurst {
 
     this.rememberPosition({
       topCoord: this.prefixTopCoord,
-      bursts: [...currentBursts],
-      nestedCoords: [...currentNestedCoords],
+      bursts: currentBursts,
+      nestedCoords: currentNestedCoords,
+      finalCoord: this.currentFinalCoord!,
+      depth: currentBursts.length,
       text,
     });
     return text;
@@ -597,7 +604,7 @@ export class Fugue {
   ) {
     return this.startBurstFromPositionAtDepth(
       ancestor,
-      ancestor.bursts.length,
+      ancestor.depth,
       minBurstExclusive,
       maxBurstInclusive,
     );
@@ -637,28 +644,15 @@ export class Fugue {
   }
 
   private startBurstFromLeftAncestor(position: PreparedFuguePosition) {
-    const nestedCoords = [...position.nestedCoords];
-    const lastIndex = nestedCoords.length - 1;
-    if (lastIndex < 0) {
-      throw new InvalidPositionError(
-        "left ancestors require at least one nested coord",
-      );
-    }
-    nestedCoords[lastIndex] = nestedCoords[lastIndex]! - 1;
-
-    return this.startBurstFromAncestor({
-      topCoord: position.topCoord,
-      bursts: position.bursts,
-      nestedCoords,
-    });
+    return this.startBurstFromAncestor(toPreparedLeftAncestor(position));
   }
 
   private tryStartAfterLeftWithinGap(
     left: PreparedFuguePosition,
     right: PreparedFuguePosition,
   ) {
-    for (let depth = 0; depth <= left.bursts.length; depth++) {
-      if (depth === left.bursts.length) {
+    for (let depth = 0; depth <= left.depth; depth++) {
+      if (depth === left.depth) {
         if (comparePreparedPrefixAtDepth(left, depth, right) < 0) {
           return this.startBurstFromPositionAtDepth(left, depth);
         }
@@ -683,7 +677,7 @@ export class Fugue {
     left: PreparedFuguePosition,
     right: PreparedFuguePosition,
   ) {
-    const depth = left.bursts.length;
+    const depth = left.depth;
     const upper = this.maxBurstBeforeRight(left, depth, right);
 
     if (upper === null || upper < 0) {
@@ -768,7 +762,7 @@ export class Fugue {
       });
     }
 
-    if (position.bursts.length < MAX_BURST_DEPTH) {
+    if (position.depth < MAX_BURST_DEPTH) {
       return this.startBurstFromAncestor(position);
     }
 
@@ -795,7 +789,7 @@ export class Fugue {
       });
     }
 
-    if (position.bursts.length < MAX_BURST_DEPTH) {
+    if (position.depth < MAX_BURST_DEPTH) {
       return this.startBurstFromLeftAncestor(position);
     }
 

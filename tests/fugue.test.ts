@@ -494,9 +494,11 @@ describe("fugue", () => {
     const state = burst as unknown as {
       currentNestedCoords: number[];
       currentBursts: number[];
+      currentFinalCoord: number;
     };
-    state.currentNestedCoords = [NESTED_COORD_MAX_RIGHT_NUMBER];
+    state.currentNestedCoords = [];
     state.currentBursts = [7];
+    state.currentFinalCoord = NESTED_COORD_MAX_RIGHT_NUMBER;
 
     const deepened = parsePosition(burst.next());
     expect(deepened.bursts).toEqual([7n, 7n]);
@@ -517,12 +519,14 @@ describe("fugue", () => {
     const state = burst as unknown as {
       currentNestedCoords: number[];
       currentBursts: number[];
+      currentFinalCoord: number;
     };
     state.currentNestedCoords = Array.from(
-      { length: MAX_BURST_DEPTH },
+      { length: MAX_BURST_DEPTH - 1 },
       () => NESTED_COORD_MAX_RIGHT_NUMBER,
     );
     state.currentBursts = Array.from({ length: MAX_BURST_DEPTH }, () => 7);
+    state.currentFinalCoord = NESTED_COORD_MAX_RIGHT_NUMBER;
 
     expect(() => burst.next()).toThrow(CoordSpaceExhaustedError);
   });

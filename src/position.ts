@@ -1,8 +1,8 @@
 import {
   encode62,
   encode62Number,
-  parseBase62FixedWidth,
-  parseBase62FixedWidthNumber,
+  parseBase62FixedWidthAt,
+  parseBase62FixedWidthNumberAt,
 } from "./codec";
 import { InvalidPositionError } from "./errors";
 
@@ -103,6 +103,8 @@ export type PreparedFuguePath = Readonly<{
   topCoord: bigint;
   bursts: readonly number[];
   nestedCoords: readonly number[];
+  finalCoord: number;
+  depth: number;
 }>;
 
 export type PreparedFuguePosition = Readonly<
@@ -126,6 +128,12 @@ function assertNumberRange(
   if (!Number.isSafeInteger(value) || value < min || value > max) {
     throw new InvalidPositionError(message);
   }
+}
+
+function preparedCoordAt(position: PreparedFuguePath, depthIndex: number) {
+  return depthIndex < position.depth - 1
+    ? position.nestedCoords[depthIndex]!
+    : position.finalCoord;
 }
 
 export function coordWidthAtDepth(depth: number) {
@@ -184,76 +192,23 @@ function tokenAt(position: ParsedFuguePosition, tokenIndex: number) {
   return position.bursts[(tokenIndex - 1) >> 1]!;
 }
 
-function parsePositionInternal(value: string): ParsedFuguePosition | null {
-  const tokens = value.split(SEPARATOR);
-  if (tokens.length < 3 || tokens.length % 2 === 0) {
-    return null;
-  }
+type ScannedPosition<TBurst, TCoord> = {
+  topCoord: bigint;
+  bursts: TBurst[];
+  nestedCoords: TCoord[];
+  finalCoord: TCoord;
+  depth: number;
+};
 
-  const burstDepth = (tokens.length - 1) >> 1;
-  if (burstDepth > MAX_BURST_DEPTH) {
-    return null;
-  }
-
-  const coords: bigint[] = [];
-  const bursts: bigint[] = [];
-
-  const firstCoord = parseBase62FixedWidth(
-    tokens[0]!,
-    TOP_COORD_WIDTH,
-    TOP_COORD_MAX,
-  );
-  if (firstCoord === null) {
-    return null;
-  }
-  coords.push(firstCoord);
-
-  for (let depth = 0; depth < burstDepth; depth++) {
-    const burstToken = tokens[depth * 2 + 1]!;
-    const coordToken = tokens[depth * 2 + 2]!;
-
-    const burst = parseBase62FixedWidth(
-      burstToken,
-      burstWidthAtDepth(depth),
-      burstMaxAtDepth(depth),
-    );
-    if (burst === null) {
-      return null;
-    }
-
-    const coord = parseBase62FixedWidth(
-      coordToken,
-      coordWidthAtDepth(depth + 1),
-      coordMaxAtDepth(depth + 1),
-    );
-    if (coord === null) {
-      return null;
-    }
-
-    bursts.push(burst);
-    coords.push(coord);
-  }
-
-  if (!isRightCoord(coords[coords.length - 1]!)) {
-    return null;
-  }
-
-  return { coords, bursts };
-}
-
-function preparePositionInternal(value: string): PreparedFuguePosition | null {
-  const tokens = value.split(SEPARATOR);
-  if (tokens.length < 3 || tokens.length % 2 === 0) {
-    return null;
-  }
-
-  const burstDepth = (tokens.length - 1) >> 1;
-  if (burstDepth > MAX_BURST_DEPTH) {
-    return null;
-  }
-
-  const topCoord = parseBase62FixedWidth(
-    tokens[0]!,
+function scanPosition<TBurst, TCoord>(
+  value: string,
+  parseBurstAt: (value: string, offset: number, depth: number) => TBurst | null,
+  parseCoordAt: (value: string, offset: number, depth: number) => TCoord | null,
+  isRightFinalCoord: (coord: TCoord) => boolean,
+): ScannedPosition<TBurst, TCoord> | null {
+  const topCoord = parseBase62FixedWidthAt(
+    value,
+    0,
     TOP_COORD_WIDTH,
     TOP_COORD_MAX,
   );
@@ -261,44 +216,122 @@ function preparePositionInternal(value: string): PreparedFuguePosition | null {
     return null;
   }
 
-  const bursts: number[] = [];
-  const nestedCoords: number[] = [];
+  let offset = TOP_COORD_WIDTH;
+  if (offset >= value.length || value[offset] !== SEPARATOR) {
+    return null;
+  }
+  offset += SEPARATOR.length;
 
-  for (let depth = 0; depth < burstDepth; depth++) {
-    const burstToken = tokens[depth * 2 + 1]!;
-    const coordToken = tokens[depth * 2 + 2]!;
+  const bursts: TBurst[] = [];
+  const nestedCoords: TCoord[] = [];
 
-    const burst = parseBase62FixedWidthNumber(
-      burstToken,
-      burstWidthAtDepth(depth),
-      burstMaxNumberAtDepth(depth),
-    );
+  for (let depth = 0; depth < MAX_BURST_DEPTH; depth++) {
+    const burst = parseBurstAt(value, offset, depth);
     if (burst === null) {
       return null;
     }
+    offset += burstWidthAtDepth(depth);
 
-    const coord = parseBase62FixedWidthNumber(
-      coordToken,
-      coordWidthAtDepth(depth + 1),
-      coordMaxNumberAtDepth(depth + 1),
-    );
+    if (offset >= value.length || value[offset] !== SEPARATOR) {
+      return null;
+    }
+    offset += SEPARATOR.length;
+
+    const coord = parseCoordAt(value, offset, depth + 1);
     if (coord === null) {
       return null;
     }
+    offset += coordWidthAtDepth(depth + 1);
 
     bursts.push(burst);
+
+    if (offset === value.length) {
+      if (!isRightFinalCoord(coord)) {
+        return null;
+      }
+
+      return {
+        topCoord,
+        bursts,
+        nestedCoords,
+        finalCoord: coord,
+        depth: depth + 1,
+      };
+    }
+
+    if (value[offset] !== SEPARATOR) {
+      return null;
+    }
+    offset += SEPARATOR.length;
     nestedCoords.push(coord);
   }
 
-  if (!isRightCoordNumber(nestedCoords[nestedCoords.length - 1]!)) {
+  return null;
+}
+
+function parsePositionInternal(value: string): ParsedFuguePosition | null {
+  const scanned = scanPosition(
+    value,
+    (source, offset, depth) => {
+      return parseBase62FixedWidthAt(
+        source,
+        offset,
+        burstWidthAtDepth(depth),
+        burstMaxAtDepth(depth),
+      );
+    },
+    (source, offset, depth) => {
+      return parseBase62FixedWidthAt(
+        source,
+        offset,
+        coordWidthAtDepth(depth),
+        coordMaxAtDepth(depth),
+      );
+    },
+    isRightCoord,
+  );
+  if (scanned === null) {
+    return null;
+  }
+
+  return {
+    coords: [scanned.topCoord, ...scanned.nestedCoords, scanned.finalCoord],
+    bursts: scanned.bursts,
+  };
+}
+
+function preparePositionInternal(value: string): PreparedFuguePosition | null {
+  const scanned = scanPosition(
+    value,
+    (source, offset, depth) => {
+      return parseBase62FixedWidthNumberAt(
+        source,
+        offset,
+        burstWidthAtDepth(depth),
+        burstMaxNumberAtDepth(depth),
+      );
+    },
+    (source, offset, depth) => {
+      return parseBase62FixedWidthNumberAt(
+        source,
+        offset,
+        coordWidthAtDepth(depth),
+        coordMaxNumberAtDepth(depth),
+      );
+    },
+    isRightCoordNumber,
+  );
+  if (scanned === null) {
     return null;
   }
 
   return {
     text: value as FuguePosition,
-    topCoord,
-    bursts,
-    nestedCoords,
+    topCoord: scanned.topCoord,
+    bursts: scanned.bursts,
+    nestedCoords: scanned.nestedCoords,
+    finalCoord: scanned.finalCoord,
+    depth: scanned.depth,
   };
 }
 
@@ -384,21 +417,21 @@ export function formatPosition(position: ParsedFuguePosition): FuguePosition {
 export function formatPreparedPosition(
   position: PreparedFuguePath,
 ): FuguePosition {
-  const { topCoord, bursts, nestedCoords } = position;
+  const { topCoord, bursts, nestedCoords, depth, finalCoord } = position;
 
-  if (bursts.length === 0) {
+  if (depth === 0) {
     throw new InvalidPositionError("positions must contain at least 1 burst");
   }
 
-  if (nestedCoords.length !== bursts.length) {
+  if (bursts.length < depth || nestedCoords.length < depth - 1) {
     throw new InvalidPositionError(
-      `positions must satisfy nestedCoords.length = bursts.length, got ${nestedCoords.length} nested coords and ${bursts.length} bursts`,
+      `prepared positions must satisfy bursts.length >= depth and nestedCoords.length >= depth - 1, got depth ${depth}, ${nestedCoords.length} nested coords, and ${bursts.length} bursts`,
     );
   }
 
-  if (bursts.length > MAX_BURST_DEPTH) {
+  if (depth > MAX_BURST_DEPTH) {
     throw new InvalidPositionError(
-      `burst depth must be <= ${MAX_BURST_DEPTH}, got ${bursts.length}`,
+      `burst depth must be <= ${MAX_BURST_DEPTH}, got ${depth}`,
     );
   }
 
@@ -409,22 +442,22 @@ export function formatPreparedPosition(
     `top coord must be in [0, ${TOP_COORD_MAX}], got ${topCoord}`,
   );
 
-  if (!isRightCoordNumber(nestedCoords[nestedCoords.length - 1]!)) {
+  if (!isRightCoordNumber(finalCoord)) {
     throw new InvalidPositionError("final coord must be right-sided (odd)");
   }
 
-  for (let depth = 0; depth < bursts.length; depth++) {
+  for (let index = 0; index < depth; index++) {
     assertNumberRange(
-      bursts[depth]!,
+      bursts[index]!,
       0,
-      burstMaxNumberAtDepth(depth),
-      `burst at depth ${depth} must be in [0, ${burstMaxNumberAtDepth(depth)}], got ${bursts[depth]!}`,
+      burstMaxNumberAtDepth(index),
+      `burst at depth ${index} must be in [0, ${burstMaxNumberAtDepth(index)}], got ${bursts[index]!}`,
     );
     assertNumberRange(
-      nestedCoords[depth]!,
+      preparedCoordAt(position, index),
       0,
-      coordMaxNumberAtDepth(depth + 1),
-      `coord at depth ${depth + 1} must be in [0, ${coordMaxNumberAtDepth(depth + 1)}], got ${nestedCoords[depth]!}`,
+      coordMaxNumberAtDepth(index + 1),
+      `coord at depth ${index + 1} must be in [0, ${coordMaxNumberAtDepth(index + 1)}], got ${preparedCoordAt(position, index)}`,
     );
   }
 
@@ -436,13 +469,13 @@ export function formatPreparedPositionUnchecked(
 ): FuguePosition {
   const tokens = [encode62(position.topCoord, TOP_COORD_WIDTH)];
 
-  for (let depth = 0; depth < position.bursts.length; depth++) {
+  for (let depth = 0; depth < position.depth; depth++) {
     tokens.push(
       encode62Number(position.bursts[depth]!, burstWidthAtDepth(depth)),
     );
     tokens.push(
       encode62Number(
-        position.nestedCoords[depth]!,
+        preparedCoordAt(position, depth),
         coordWidthAtDepth(depth + 1),
       ),
     );
@@ -493,7 +526,7 @@ export function comparePreparedPositions(
     return 1;
   }
 
-  const sharedDepth = Math.min(left.bursts.length, right.bursts.length);
+  const sharedDepth = Math.min(left.depth, right.depth);
   for (let depth = 0; depth < sharedDepth; depth++) {
     const leftBurst = left.bursts[depth]!;
     const rightBurst = right.bursts[depth]!;
@@ -505,8 +538,8 @@ export function comparePreparedPositions(
       return 1;
     }
 
-    const leftCoord = left.nestedCoords[depth]!;
-    const rightCoord = right.nestedCoords[depth]!;
+    const leftCoord = preparedCoordAt(left, depth);
+    const rightCoord = preparedCoordAt(right, depth);
     if (leftCoord < rightCoord) {
       return -1;
     }
@@ -516,11 +549,11 @@ export function comparePreparedPositions(
     }
   }
 
-  if (left.bursts.length < right.bursts.length) {
+  if (left.depth < right.depth) {
     return -1;
   }
 
-  if (left.bursts.length > right.bursts.length) {
+  if (left.depth > right.depth) {
     return 1;
   }
 
@@ -548,17 +581,14 @@ export function isPreparedPositionPrefix(
   prefix: PreparedFuguePath,
   value: PreparedFuguePath,
 ) {
-  if (
-    prefix.topCoord !== value.topCoord ||
-    prefix.bursts.length > value.bursts.length
-  ) {
+  if (prefix.topCoord !== value.topCoord || prefix.depth > value.depth) {
     return false;
   }
 
-  for (let depth = 0; depth < prefix.bursts.length; depth++) {
+  for (let depth = 0; depth < prefix.depth; depth++) {
     if (
       prefix.bursts[depth] !== value.bursts[depth] ||
-      prefix.nestedCoords[depth] !== value.nestedCoords[depth]
+      preparedCoordAt(prefix, depth) !== preparedCoordAt(value, depth)
     ) {
       return false;
     }
@@ -581,19 +611,17 @@ export function toLeftAncestor(
 export function toPreparedLeftAncestor(
   position: PreparedFuguePath,
 ): PreparedFuguePath {
-  const nestedCoords = [...position.nestedCoords];
-  const lastCoord = nestedCoords[nestedCoords.length - 1]!;
-
-  if (!isRightCoordNumber(lastCoord)) {
+  if (!isRightCoordNumber(position.finalCoord)) {
     throw new InvalidPositionError(
-      `Expected a right-side coord, got ${lastCoord}`,
+      `Expected a right-side coord, got ${position.finalCoord}`,
     );
   }
 
-  nestedCoords[nestedCoords.length - 1] = lastCoord - 1;
   return {
     topCoord: position.topCoord,
-    bursts: [...position.bursts],
-    nestedCoords,
+    bursts: position.bursts,
+    nestedCoords: position.nestedCoords,
+    finalCoord: position.finalCoord - 1,
+    depth: position.depth,
   };
 }

@@ -4,12 +4,20 @@ const DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const BASE62 = BigInt(DIGITS.length);
 const BASE62_NUMBER = DIGITS.length;
 
-const DIGIT_TO_VALUE = new Map<string, number>();
-for (let i = 0; i < DIGITS.length; i++) {
-  const digit = DIGITS[i];
-  if (digit !== undefined) {
-    DIGIT_TO_VALUE.set(digit, i);
+function digitToValue(charCode: number) {
+  if (charCode >= 48 && charCode <= 57) {
+    return charCode - 48;
   }
+
+  if (charCode >= 65 && charCode <= 90) {
+    return charCode - 65 + 10;
+  }
+
+  if (charCode >= 97 && charCode <= 122) {
+    return charCode - 97 + 36;
+  }
+
+  return -1;
 }
 
 export function encode62(value: bigint, width: number) {
@@ -80,11 +88,10 @@ export function decode62(value: string) {
   let out = 0n;
 
   for (let i = 0; i < value.length; i++) {
-    const char = value[i]!;
-
-    const digit = DIGIT_TO_VALUE.get(char);
-    if (digit === undefined) {
-      throw new InvalidBase62Error(`Invalid base62 character "${char}"`);
+    const charCode = value.charCodeAt(i);
+    const digit = digitToValue(charCode);
+    if (digit < 0) {
+      throw new InvalidBase62Error(`Invalid base62 character "${value[i]!}"`);
     }
 
     out = out * BASE62 + BigInt(digit);
@@ -98,16 +105,31 @@ export function parseBase62FixedWidth(
   width: number,
   maxAllowed: bigint,
 ): bigint | null {
-  if (value.length !== width) {
+  return parseBase62FixedWidthAt(value, 0, width, maxAllowed);
+}
+
+export function parseBase62FixedWidthNumber(
+  value: string,
+  width: number,
+  maxAllowed: number,
+): number | null {
+  return parseBase62FixedWidthNumberAt(value, 0, width, maxAllowed);
+}
+
+export function parseBase62FixedWidthAt(
+  value: string,
+  start: number,
+  width: number,
+  maxAllowed: bigint,
+): bigint | null {
+  if (start < 0 || width <= 0 || start + width > value.length) {
     return null;
   }
 
   let out = 0n;
-  for (let i = 0; i < value.length; i++) {
-    const char = value[i]!;
-
-    const digit = DIGIT_TO_VALUE.get(char);
-    if (digit === undefined) {
+  for (let i = 0; i < width; i++) {
+    const digit = digitToValue(value.charCodeAt(start + i));
+    if (digit < 0) {
       return null;
     }
 
@@ -121,21 +143,20 @@ export function parseBase62FixedWidth(
   return out;
 }
 
-export function parseBase62FixedWidthNumber(
+export function parseBase62FixedWidthNumberAt(
   value: string,
+  start: number,
   width: number,
   maxAllowed: number,
 ): number | null {
-  if (value.length !== width) {
+  if (start < 0 || width <= 0 || start + width > value.length) {
     return null;
   }
 
   let out = 0;
-  for (let i = 0; i < value.length; i++) {
-    const char = value[i]!;
-
-    const digit = DIGIT_TO_VALUE.get(char);
-    if (digit === undefined) {
+  for (let i = 0; i < width; i++) {
+    const digit = digitToValue(value.charCodeAt(start + i));
+    if (digit < 0) {
       return null;
     }
 

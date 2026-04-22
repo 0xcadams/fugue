@@ -13,10 +13,12 @@ import {
   TOP_COORD_WIDTH,
   comparePositions,
   formatPosition,
+  formatPreparedPosition,
   isFuguePosition,
   isPositionPrefix,
   isRightCoord,
   parsePosition,
+  preparePosition,
   toLeftAncestor,
   toLeftCoord,
   tryParsePosition,
@@ -56,6 +58,9 @@ describe("position", () => {
         encode62(303n, NESTED_COORD_WIDTH),
       ].join("!"),
     );
+
+    const prepared = preparePosition(position);
+    expect(formatPreparedPosition(prepared)).toBe(position);
   });
 
   test("comparePositions matches raw string order", () => {
