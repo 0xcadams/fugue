@@ -15,6 +15,7 @@ import {
   MAX_BURST_DEPTH,
   NESTED_COORD_MAX_RIGHT,
   NESTED_COORD_MID,
+  TOP_COORD_MAX_RIGHT,
   TOP_COORD_MID,
   formatPosition,
   parsePosition,
@@ -68,9 +69,48 @@ describe("fugue", () => {
     const middle = fugue.first();
     const before = fugue.before(middle);
     const after = fugue.after(middle);
+    const parsedMiddle = parsePosition(middle);
+    const parsedBefore = parsePosition(before);
+    const parsedAfter = parsePosition(after);
 
     expect(before < middle).toBe(true);
     expect(middle < after).toBe(true);
+    expect(parsedMiddle.bursts.length).toBe(1);
+    expect(parsedBefore.bursts.length).toBe(1);
+    expect(parsedAfter.bursts.length).toBe(1);
+    expect(parsedBefore.coords[0]).toBeLessThan(parsedMiddle.coords[0]!);
+    expect(parsedMiddle.coords[0]).toBeLessThan(parsedAfter.coords[0]!);
+    expect(before.length).toBe(25);
+    expect(middle.length).toBe(25);
+    expect(after.length).toBe(25);
+  });
+
+  test("repeated edge inserts stay flat", () => {
+    const appendFugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(15),
+    });
+    let appended = appendFugue.first();
+
+    for (let index = 0; index < 200; index++) {
+      appended = appendFugue.after(appended);
+      const parsed = parsePosition(appended);
+
+      expect(parsed.bursts.length).toBe(1);
+      expect(appended.length).toBe(25);
+    }
+
+    const prependFugue = new Fugue({
+      randomBytes: makeDeterministicRandomBytes(16),
+    });
+    let prepended = prependFugue.first();
+
+    for (let index = 0; index < 200; index++) {
+      prepended = prependFugue.before(prepended);
+      const parsed = parsePosition(prepended);
+
+      expect(parsed.bursts.length).toBe(1);
+      expect(prepended.length).toBe(25);
+    }
   });
 
   test("between creates a fresh nested burst inside old text", () => {
@@ -192,11 +232,11 @@ describe("fugue", () => {
     expect(() => burst.next()).toThrow(CoordSpaceExhaustedError);
   });
 
-  test("startBurst exhausts when an ancestor is already at max burst depth", () => {
+  test("startBurstAfter exhausts once top-level space is exhausted", () => {
     const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(8) });
     const position = formatPosition({
       coords: [
-        TOP_COORD_MID,
+        TOP_COORD_MAX_RIGHT,
         ...Array.from({ length: MAX_BURST_DEPTH }, () => 1n),
       ],
       bursts: Array.from({ length: MAX_BURST_DEPTH }, () => 7n),
@@ -214,9 +254,35 @@ describe("fugue", () => {
 
     const beforeBurst = fugue.startBurstBefore(first);
     const afterBurst = fugue.startBurstAfter(second);
+    const beforePosition = beforeBurst.next();
+    const afterPosition = afterBurst.next();
 
-    expect(beforeBurst.next() < first).toBe(true);
-    expect(second < afterBurst.next()).toBe(true);
+    expect(beforePosition < first).toBe(true);
+    expect(second < afterPosition).toBe(true);
+    expect(parsePosition(beforePosition).bursts.length).toBe(1);
+    expect(parsePosition(afterPosition).bursts.length).toBe(1);
+  });
+
+  test("edge bursts only nest when top-level coord space is exhausted", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(17) });
+    const maxTop = formatPosition({
+      coords: [TOP_COORD_MAX_RIGHT, NESTED_COORD_MID],
+      bursts: [7n],
+    });
+    const minTop = formatPosition({
+      coords: [1n, NESTED_COORD_MID],
+      bursts: [7n],
+    });
+
+    const afterMax = fugue.startBurstAfter(maxTop).next();
+    const beforeMin = fugue.startBurstBefore(minTop).next();
+
+    expect(maxTop < afterMax).toBe(true);
+    expect(beforeMin < minTop).toBe(true);
+    expect(parsePosition(afterMax).bursts.length).toBe(2);
+    expect(parsePosition(beforeMin).bursts.length).toBe(2);
+    expect(parsePosition(afterMax).coords[0]).toBe(TOP_COORD_MAX_RIGHT);
+    expect(parsePosition(beforeMin).coords[0]).toBe(1n);
   });
 
   test("constructor validates burst prefixes", () => {

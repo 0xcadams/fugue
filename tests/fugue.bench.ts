@@ -36,6 +36,36 @@ describe("fugue", () => {
     fugue.between(left, right);
   });
 
+  bench("after chain stays flat", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(6) });
+    let position = fugue.first();
+
+    for (let index = 0; index < 1000; index++) {
+      position = fugue.after(position);
+    }
+  });
+
+  bench("before chain stays flat", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(7) });
+    let position = fugue.first();
+
+    for (let index = 0; index < 1000; index++) {
+      position = fugue.before(position);
+    }
+  });
+
+  bench("nested burst continuation in old gap", () => {
+    const fugue = new Fugue({ randomBytes: makeDeterministicRandomBytes(8) });
+    const seed = fugue.startBurst(null, null);
+    const left = seed.next();
+    const right = seed.next();
+    const burst = fugue.startBurst(left, right);
+
+    for (let index = 0; index < 1000; index++) {
+      burst.next();
+    }
+  });
+
   bench("concurrent sibling bursts", () => {
     const seedA = new Fugue({ randomBytes: makeDeterministicRandomBytes(3) });
     const left = seedA.first();

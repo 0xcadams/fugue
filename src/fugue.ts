@@ -13,6 +13,7 @@ import {
   NESTED_COORD_MAX_RIGHT,
   NESTED_COORD_MID,
   SEPARATOR,
+  TOP_COORD_MAX_RIGHT,
   TOP_COORD_MID,
   comparePositions,
   formatPosition,
@@ -50,13 +51,25 @@ function clonePath(path: readonly bigint[]) {
   return [...path];
 }
 
-function nextSequentialCoordAfter(coord: bigint) {
-  if (coord <= NESTED_COORD_MAX_RIGHT - COORD_STRIDE) {
+function nextSequentialCoordAfter(coord: bigint, maxRight: bigint) {
+  if (coord <= maxRight - COORD_STRIDE) {
     return coord + COORD_STRIDE;
   }
 
-  if (coord < NESTED_COORD_MAX_RIGHT) {
-    return NESTED_COORD_MAX_RIGHT;
+  if (coord < maxRight) {
+    return maxRight;
+  }
+
+  return null;
+}
+
+function nextSequentialCoordBefore(coord: bigint) {
+  if (coord >= 1n + COORD_STRIDE) {
+    return coord - COORD_STRIDE;
+  }
+
+  if (coord > 1n) {
+    return 1n;
   }
 
   return null;
@@ -115,7 +128,10 @@ export class FugueBurst {
     const coords = [...this.lastPosition.coords];
     const bursts = [...this.lastPosition.bursts];
     const lastCoordIndex = coords.length - 1;
-    const nextCoord = nextSequentialCoordAfter(coords[lastCoordIndex]!);
+    const nextCoord = nextSequentialCoordAfter(
+      coords[lastCoordIndex]!,
+      NESTED_COORD_MAX_RIGHT,
+    );
 
     if (nextCoord !== null) {
       coords[lastCoordIndex] = nextCoord;
@@ -155,11 +171,11 @@ export class Fugue {
   }
 
   after(position: FuguePosition): FuguePosition {
-    return this.between(position, null);
+    return this.startBurstAfter(position).next();
   }
 
   before(position: FuguePosition): FuguePosition {
-    return this.between(null, position);
+    return this.startBurstBefore(position).next();
   }
 
   between(
@@ -190,11 +206,30 @@ export class Fugue {
   }
 
   startBurstAfter(position: FuguePosition): FugueBurst {
-    return this.startBurst(position, null);
+    const parsedPosition = parsePosition(position);
+    const nextTopCoord = nextSequentialCoordAfter(
+      parsedPosition.coords[0]!,
+      TOP_COORD_MAX_RIGHT,
+    );
+
+    if (nextTopCoord !== null) {
+      return new FugueBurst([nextTopCoord], [this.randomBurstToken()]);
+    }
+
+    return this.startBurstFromAncestor(parsedPosition);
   }
 
   startBurstBefore(position: FuguePosition): FugueBurst {
-    return this.startBurst(null, position);
+    const parsedPosition = parsePosition(position);
+    const previousTopCoord = nextSequentialCoordBefore(
+      parsedPosition.coords[0]!,
+    );
+
+    if (previousTopCoord !== null) {
+      return new FugueBurst([previousTopCoord], [this.randomBurstToken()]);
+    }
+
+    return this.startBurstFromAncestor(toLeftAncestor(parsedPosition));
   }
 
   private startBurstFromAncestor(ancestor: ParsedFuguePosition) {
