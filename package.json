@@ -7,7 +7,6 @@
   "scripts": {
     "clean": "rm -rf dist node_modules coverage",
     "build": "tsup src/index.ts --format cjs,esm --dts",
-    "compare:branches": "node scripts/compare-branches.mjs",
     "format": "prettier --write .",
     "prepack": "bun run build",
     "release": "bun publish",

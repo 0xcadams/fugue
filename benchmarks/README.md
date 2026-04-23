@@ -1,9 +1,6 @@
 # Benchmarks
 
-Realistic cross-library benchmarks live in this workspace package so the root
-library package does not need benchmark-only dependencies.
-
-Run the benchmark suite with:
+Realistic cross-library benchmarks. Run the benchmark suite with:
 
 ```bash
 bun --cwd benchmarks run bench

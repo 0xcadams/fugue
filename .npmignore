@@ -2,8 +2,6 @@ integration/
 tests/
 coverage/
 benchmarks/
-reports/
-scripts/
 src/
 .gitignore
 .github/
