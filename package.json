@@ -7,6 +7,7 @@
     "clean": "rm -rf dist coverage node_modules fugue/node_modules fugue/dist fugue/coverage",
     "build": "bun run --filter fugue build",
     "format": "prettier --write .",
+    "postinstall": "bun run --filter fugue build",
     "release": "bun run --filter fugue release",
     "test": "bun run --filter fugue test",
     "test:types": "bun run --filter fugue test:types",

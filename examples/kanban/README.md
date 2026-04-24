@@ -31,11 +31,10 @@ A very small kanban app built with Next.js, Tailwind, Drizzle, `drizzle-zero`, R
      postgres -c wal_level=logical
    ```
 
-3. Install workspace dependencies and build the local `fugue` package from the repo root:
+3. Install workspace dependencies from the repo root. This also builds the local `fugue` package for the example:
 
    ```bash
    bun install
-   bun run build
    ```
 
 4. Apply the schema and seed the demo board:
