@@ -33,6 +33,7 @@ Those actions have intent. The inserted items are supposed to stay together as a
 
 Array indices are fine in a single-writer system, but they are unstable under concurrent edits. If two clients both insert at index 5, there is no durable answer to what "index 5" means anymore.
 
+
 Integer ranks are not much better. They force renumbering or reindexing when a list gets crowded, and reindexing is exactly the kind of rewrite you want to avoid in collaborative systems.
 
 ### Plain fractional indexing
