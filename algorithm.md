@@ -1,59 +1,271 @@
 # Algorithm
 
-## Background
+`fugue` v3 uses recursive burst paths.
 
-At a high level, position-strings implements the core of a List CRDT. Each position string corresponds to an element in the list, such that the lexicographic order on strings matches the list order. We don't implement a literal List CRDT with state and operations, but it's straightforward to implement one on top of position-strings.
+The design goal is simple:
 
-More specifically, position-strings is based on [Fugue: A Basic List CRDT](https://mattweidner.com/2022/10/21/basic-list-crdt.html#a-basic-uniquely-dense-total-order). It is an optimized version of that post's [string implementation](https://mattweidner.com/2022/10/21/basic-list-crdt.html#intro-string-implementation), which uses strings to represent paths in a tree. The strings are designed so that their lexicographic order matches the tree's [in-order traversal](https://en.wikipedia.org/wiki/Tree_traversal#In-order,_LNR) order.
+- plain lexicographic string sort equals logical order
+- clients generate keys locally
+- old keys never need rewriting
+- uninterrupted insertion bursts stay contiguous
+- later bursts can nest inside older text as fresh blocks
 
-## Tree Structure
+## Key shape
 
-position-strings's implicit tree is structured in layers. Each layer has a specific type and can only contain nodes of that type. There are 3 layer types that alternate cyclically (1 -> 2 -> 3 -> 1 -> 2 -> 3 -> ...). Each position string corresponds to a type-3 node, and the string itself encodes the node labels on the path from the root to that node.
+The serialized form is an alternating path:
 
-The 3 node/layer types are:
+```text
+<topCoord>!<topBurst>!<coord>[!<burst>!<coord>]...
+```
 
-1. **Waypoint nodes**: Labeled by the ID of the `Fugue` that created it, sorted arbitrarily. The ID ensures that positions created by different `Fugue`s are distinct: each `Fugue` only returns positions whose _final_ waypoint node uses its own ID.
-2. **valueIndex nodes**: Labeled by an integer, sorted by magnitude. When a `Fugue` creates positions in a left-to-right sequence, instead of appending a new waypoint node each time, it reuses the first waypoint node and just increases the valueIndex. That causes the position string length to grow logarithmically instead of linearly.
-3. **Side nodes**: Labeled by a bit "left side" (0) or "right side" (1). The actual position at a node, and all of the node's right-side descendants, use "right side"; all of its left-side descendants use "left side". This ensures that all left descendants are less than the position at a node, which is less than all right descendants.
+Token widths:
 
-### `between`
+- `topCoord`: 11-char base62
+- `topBurst`: 7-char base62
+- nested `coord`: 6-char base62
+- nested `burst`: 7-char base62
+- separator: `!`
+- maximum burst depth: 64 burst tokens per key
 
-In terms of the tree structure, `Fugue.between(left, right)` does the following:
+Every external position:
 
-1. If `right` is a descendant of `left`, create a left descendant of `right` as follows. First, create a waypoint node that is a left child of `right` (replacing `right`'s final "right side" bit with "left side"). Then append the next new valueIndex node (usually 0) and a "right side" node, to fill out the 3 layers. Return that final node.
-2. Otherwise, see if we can just increase `left`'s final valueIndex, instead of lengthing its path. This is allowed if (a) `left`'s final waypoint node uses our ID, and (b) `right` doesn't use that same waypoint node. If so, look up the next unused valueIndex for that waypoint (stored in `Fugue`), then use `left` but with that final valueIndex.
-3. If not, create a right descendant of `left` like in case 1: append a waypoint node, the next new valueIndex, then "right side"; return that final node.
+- starts with a coord token
+- ends with a coord token
+- contains exactly one more coord than burst tokens
 
-You can check that the resulting node lies between `left` and `right`, and that this procedure satisfies properties 4-6 from the [README](./README.md).
+## Coord tokens and the hidden side bit
 
-> The tree we've described so far is similar to that used by the [Logoot List CRDT](https://doi.org/10.1109/ICDCS.2009.75), which also has alternating layers of IDs and numbers. However, Logoot sorts by numbers first and then IDs, while we do the opposite. This lets us avoid interleaving: if two `Fugue`s concurrently create a sequence of positions at the same place, their positions will end up under different waypoint nodes, hence appear one after the other.
+Each coord encodes a local magnitude plus a hidden left/right side.
 
-## String Representation
+Stored positions must end in a right-side coord. Left-side coords are internal only. They let `fugue` open a fresh burst immediately before a descendant without changing the visible key format.
 
-Finally, we need to map type-3 nodes in the above tree to position strings, such that the tree order matches the position strings' lexicographic order.
+In the encoding, right-side coords are odd and the matching left-side coord is the preceding even value. So if a visible coord is `51`, its hidden left attachment point is `50`.
 
-Given a tree node `a`, let `aPath` be the sequence of node labels on the path from the root to that node. Note that the tree order matches the "lexicographic order" on these sequences: `a < b` if `aPath[i] < bPath[i]` at the first index `i` where they disagree, or if `aPath` is a strict prefix of `bPath`.
+A key may contain an even coord internally, but it may not end with one.
 
-I claim that we can set `a`'s position string to be `aPos = aPath.map(f).join("")` for any `f: (label: string, i: number) => string` with the following property:
+Examples below use shortened symbolic tokens for intuition.
+Actual wire values are opaque fixed-width base62, and real stored positions must end in a right-side coord, so example final coords are shown as odd values.
 
-- If `aPath` and `bPath` first disagree at index `i` and `aPath[i] < bPath[i]`, then:
-  1. `f(aPath[i], i) < f(bPath[i], i)` as strings.
-  2. `f(aPath[i], i)` is not a prefix of `f(bPath[i], i)`.
+## Ordering semantics
 
-Indeed, then there is some index `j` such that `f(aPath[i], i).charAt(j) < f(bPath[i], i).charAt(j)`. Hence no matter what happens in the rest of `aPos` and `bPos`, we'll still have `aPos < bPos`.
+Sort is plain string compare.
 
-One working `f` is defined as follows, with a different rule for each layer type:
+This works because:
 
-1. (Waypoint nodes) Map the node's label (an ID) to `` `,${ID}.` ``. The period, which is not allowed in IDs, ensures the no-prefix rule (ii).
-2. (valueIndex nodes) Map the valueIndex to its _valueSeq_: its entry in a special sequence of numbers that is in lexicographic order and has no prefixes (when base52 encoded). You can read about the sequence we use in the comment above [`position_source.ts`](./src/position_source.ts)'s `nextOddValueSeq` function.
-3. (Side nodes) Map "left side" to `"0"` and "right side" to `"1"`.
+1. tokens are fixed-width base62 at each depth
+2. `!` sorts before digits and letters
+3. tokens compare left to right
+4. if one key is a strict prefix of another, the shorter key sorts first
 
-### Optimizations
+Conceptual example:
 
-In the actual implementation, we optimize the above string representation in a few ways.
+```text
+50!A!51 < 50!A!51!B!51 < 50!A!61
+```
 
-First, for waypoint nodes, we only use each "long name" `` `,${ID}.` `` once per position string. If the same ID occurs later in the same path, those nodes get a "short name" that is just an index into the list of prior long names. Index `n` is encoded as `base52(n // 10) + base10(n % 10)`. The set of all waypoint names following a given path is still unique, which ensures rule (i) for some arbitrary order on IDs (not necessarily lexicographic); and they are prefix-free (rule (ii)) due to short names' special ending digit and long names' special starting comma and ending period.
+Actual wire values are opaque fixed-width base62, but the ordering story is the same.
 
-Second, instead of giving each side node a whole character, we give it the last bit in the preceding valueSeq. Specifically, we go by twos in the special sequence, then add 1 if the side is "right".
+## Burst model
 
-Third, for the first waypoint node, we use `` `${ID}.` `` (no comma) instead of the long name `` `,${ID}.` ``. Otherwise, every position would start with a redundant `','`.
+A burst is one uninterrupted insertion episode: typing, paste, drag-copy, etc.
+
+Public API:
+
+- `between(left, right)` -> one-off insert
+- `startBurst(left, right)` -> explicit burst handle
+- `burst.next()` -> next item in that burst
+
+Each burst owns a prefix that ends in a burst token.
+All items from that burst sort under that prefix, so the burst forms one contiguous block.
+
+`startBurst(left, right)` is the strict API: it either opens a fresh burst prefix or throws.
+`between(left, right)` usually returns a size-1 fresh burst, but in rare exhaustion cases it can fall back to a same-depth midpoint instead.
+
+## Starting a fresh burst
+
+`startBurst(left, right)` chooses the shallowest fresh burst that stays inside the requested gap.
+
+### Case 1: empty document
+
+If `left` and `right` are both missing:
+
+1. use the fixed middle top coord
+2. choose a random top burst token
+3. return a burst prefix `<topCoord>!<topBurst>`
+
+The first `next()` call appends the middle nested coord.
+
+### Case 2: insert at an edge
+
+If exactly one bound is present, prefer a flat top-level key first.
+
+For `startBurstAfter(left)`:
+
+1. move to the next top coord if one exists
+2. otherwise open a nested burst under `left`
+3. at the far-right top-coord boundary, if the key is already at max burst depth, reuse the same top coord with a larger top-level burst token if that burst space still exists
+
+`startBurstBefore(right)` is symmetric:
+
+1. move to the previous top coord if one exists
+2. otherwise open a nested burst before `right` via its hidden left attachment point
+3. at the far-left top-coord boundary, if the key is already at max burst depth, reuse the same top coord with a smaller top-level burst token if that burst space still exists
+
+So repeated edge inserts stay flat until top-level coord space is exhausted.
+
+### Case 3: `left` is a strict prefix of `right`
+
+First try to open a child burst directly under `left` with a burst token smaller than `right`'s next burst token.
+
+If no child burst token fits there, fall back to `right`'s hidden left attachment point and open the burst there.
+
+That still sorts after `left` and before `right`, but uses one extra burst level.
+
+### Case 4: general middle gap
+
+Otherwise, inspect shallower shared ancestors before falling back to the deepest left path.
+
+1. if a sibling burst token fits between `left` and `right` at some shared depth, open there
+2. otherwise open a fresh burst directly under `left`
+
+This lets `fugue` reopen a shallower middle gap when one exists instead of always nesting under the deepest left path.
+
+## `between(left, right)`
+
+`between(left, right)` first tries:
+
+```ts
+startBurst(left, right).next();
+```
+
+If that fails with `BurstSpaceExhaustedError`, `between()` can still succeed when `left` and `right` already have the same depth and path and there is still room between their final coords.
+
+In that case it returns a same-depth midpoint coord instead of opening a fresh burst.
+
+So `between()` is slightly more permissive than `startBurst()`: it may succeed in a gap where no fresh burst prefix can be opened.
+
+## `burst.next()`
+
+Given a burst prefix ending in a burst token:
+
+```text
+...!<burst>
+```
+
+`next()` works like this.
+
+### First item
+
+Append the middle nested coord:
+
+```text
+...!<burst>!<midCoord>
+```
+
+### Later items in the same local coord range
+
+Advance the trailing coord by a fixed stride.
+
+In the implementation:
+
+- nested coords are 6-char base62
+- the raw coord stride is `2^16`
+- raw right-sided coords stay odd, so stepping preserves the side bit
+
+### When the trailing coord reaches max
+
+Deepen under the same burst:
+
+1. append the same burst token again
+2. append a fresh middle coord
+
+Conceptually:
+
+```text
+50!A!MAX
+50!A!MAX!A!MID
+50!A!MAX!A!MID+step
+```
+
+That lets one long burst keep going without becoming a new burst.
+
+## Fresh nested bursts inside old text
+
+This is the key v3 property.
+
+Example:
+
+```text
+50!A!51
+50!A!61
+```
+
+Later insert a fresh burst between them:
+
+```text
+50!A!51
+50!A!51!B!51
+50!A!51!B!61
+50!A!61
+```
+
+So the later burst gets its own identity `B` and stays contiguous.
+
+## Concurrent bursts in the same gap
+
+If two clients start bursts in the same gap, each gets a different random burst token.
+
+Example:
+
+```text
+50!A!51
+50!A!51!B!51
+50!A!51!B!61
+50!A!51!C!51
+50!A!51!C!61
+50!A!61
+```
+
+The result is `BBCC` or `CCBB`, not `BCBC`.
+
+## Randomness and collision model
+
+Burst tokens are sampled from a CSPRNG by default.
+
+Important detail:
+
+- top-level bursts serialize to width 7
+- nested bursts serialize to width 7
+- a long-running burst reuses its own token when it deepens, so burst identity has the same 7-char budget at every depth
+
+Collisions are probabilistic rather than coordinated. With 7-char burst tokens and a CSPRNG, accidental sibling collisions are very rare in ordinary workloads, but still not impossible.
+
+## Exhaustion and explicit errors
+
+`fugue` still has hard limits.
+
+### `BurstSpaceExhaustedError`
+
+Thrown when `fugue` cannot open a fresh burst in the requested gap.
+
+Common reasons:
+
+- opening another nested burst would exceed the 64-burst depth cap
+- no burst token remains between the requested bounds at the chosen depth
+
+`between(left, right)` still tries the same-depth midpoint fallback described above before rethrowing this error.
+
+### `CoordSpaceExhaustedError`
+
+Thrown when `burst.next()` would need to deepen again but the key is already at the burst depth cap.
+
+These errors are explicit on purpose.
+`fugue` does not silently generate incorrect keys.
+
+## Complexity
+
+- common insert: typically `O(1)`
+- `burst.next()`: typically `O(1)`
+- parse/format/compare: `O(d)` where `d` is burst depth
+- flat key length: 26 chars
+- each extra nested burst level adds one `!burst!coord` pair, about 15 chars

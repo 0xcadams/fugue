@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo,
+    Monaco, Consolas, 'Liberation Mono', monospace;
+}
+
+body {
+  min-height: 100vh;
+  background: #ffffff;
+  color: #000000;
+}

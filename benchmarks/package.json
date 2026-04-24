@@ -1,0 +1,25 @@
+{
+  "name": "fugue-benchmarks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "tsx src/run.ts",
+    "bench:smoke": "tsx src/run.ts --scale=smoke",
+    "bench:full": "tsx src/run.ts --scale=full",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@automerge/automerge": "3.2.5",
+    "fractional-indexing": "3.2.0",
+    "jittered-fractional-indexing": "1.0.1",
+    "list-positions": "2.0.0",
+    "loro-crdt": "1.11.1",
+    "position-strings": "2.0.1",
+    "yjs": "13.6.30"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
+  }
+}

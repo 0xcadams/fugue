@@ -2,3 +2,11 @@ dist/
 node_modules/
 coverage/
 .DS_Store
+benchmarks/.cache/
+benchmarks/reports/
+examples/*/.next/
+examples/*/node_modules/
+examples/*/.env.local
+examples/*/.env
+examples/*/.zero-cache/
+tsconfig.tsbuildinfo

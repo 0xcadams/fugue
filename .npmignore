@@ -1,6 +1,8 @@
 integration/
 tests/
 coverage/
+benchmarks/
+src/
 .gitignore
 .github/
 .prettierrc
@@ -8,5 +10,4 @@ coverage/
 vitest.config.ts
 tsconfig.json
 tsconfig.build.json
-pnpm-lock.yaml
-pnpm-workspace.yaml
+bun.lock

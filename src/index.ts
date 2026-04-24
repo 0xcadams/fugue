@@ -1,3 +1,17 @@
-import { Fugue, type FugueOptions, type FuguePosition } from "./strings";
+export {
+  BurstSpaceExhaustedError,
+  CoordSpaceExhaustedError,
+  InvalidBoundsError,
+  InvalidPositionError,
+  InvalidRandomSourceError,
+  SecureRandomUnavailableError,
+} from "./errors";
 
-export { Fugue, type FugueOptions, type FuguePosition };
+export { isFuguePosition, type FuguePosition } from "./position";
+
+export {
+  Fugue,
+  FugueBurst,
+  type FugueOptions,
+  type FugueRandomBytes,
+} from "./fugue";
