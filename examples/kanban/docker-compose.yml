@@ -1,0 +1,15 @@
+services:
+  kanban-upstream-db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: fugue_kanban
+      POSTGRES_PASSWORD: password
+    ports:
+      - 5432:5432
+    command: postgres -c wal_level=logical
+    volumes:
+      # automatically runs drizzle migrations in alphabetical order
+      - ./drizzle:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: pg_isready
+      interval: 10s

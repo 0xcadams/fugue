@@ -374,6 +374,7 @@ if (isFuguePosition(maybePosition)) {
 - [algorithm.md](./algorithm.md) explains the full format and allocation rules
 - [benchmarks/README.md](./benchmarks/README.md) covers realistic cross-library benchmarks
 - the benchmark suite compares `fugue` with other position-key libraries and full CRDT libraries on text and board workloads
+- [comparisons.md](./comparisons.md) summarizes the latest full benchmark run in quick comparison tables
 
 ## License
 

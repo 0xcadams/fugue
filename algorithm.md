@@ -43,6 +43,9 @@ In the encoding, right-side coords are odd and the matching left-side coord is t
 
 A key may contain an even coord internally, but it may not end with one.
 
+Examples below use shortened symbolic tokens for intuition.
+Actual wire values are opaque fixed-width base62, and real stored positions must end in a right-side coord, so example final coords are shown as odd values.
+
 ## Ordering semantics
 
 Sort is plain string compare.
@@ -57,7 +60,7 @@ This works because:
 Conceptual example:
 
 ```text
-50!A!51 < 50!A!51!B!50!C!51 < 50!A!51!B!51
+50!A!51 < 50!A!51!B!51 < 50!A!61
 ```
 
 Actual wire values are opaque fixed-width base62, but the ordering story is the same.
@@ -68,16 +71,19 @@ A burst is one uninterrupted insertion episode: typing, paste, drag-copy, etc.
 
 Public API:
 
-- `between(left, right)` -> one-item burst
+- `between(left, right)` -> one-off insert
 - `startBurst(left, right)` -> explicit burst handle
 - `burst.next()` -> next item in that burst
 
 Each burst owns a prefix that ends in a burst token.
 All items from that burst sort under that prefix, so the burst forms one contiguous block.
 
+`startBurst(left, right)` is the strict API: it either opens a fresh burst prefix or throws.
+`between(left, right)` usually returns a size-1 fresh burst, but in rare exhaustion cases it can fall back to a same-depth midpoint instead.
+
 ## Starting a fresh burst
 
-`startBurst(left, right)` uses three cases.
+`startBurst(left, right)` chooses the shallowest fresh burst that stays inside the requested gap.
 
 ### Case 1: empty document
 
@@ -89,35 +95,54 @@ If `left` and `right` are both missing:
 
 The first `next()` call appends the middle nested coord.
 
-### Case 2: insert before `right`
+### Case 2: insert at an edge
 
-Use this when `left` is missing or `right` is a descendant of `left`.
+If exactly one bound is present, prefer a flat top-level key first.
 
-1. parse `right`
-2. replace its final right-side coord with the matching left-side coord
-3. append a fresh burst token
+For `startBurstAfter(left)`:
 
-This creates a subtree that sorts before `right` but stays inside the requested gap.
+1. move to the next top coord if one exists
+2. otherwise open a nested burst under `left`
+3. at the far-right top-coord boundary, if the key is already at max burst depth, reuse the same top coord with a larger top-level burst token if that burst space still exists
 
-### Case 3: all other gaps
+`startBurstBefore(right)` is symmetric:
 
-Create a fresh burst as a right descendant of `left`:
+1. move to the previous top coord if one exists
+2. otherwise open a nested burst before `right` via its hidden left attachment point
+3. at the far-left top-coord boundary, if the key is already at max burst depth, reuse the same top coord with a smaller top-level burst token if that burst space still exists
 
-1. parse `left`
-2. append a fresh burst token
-3. return that new burst prefix
+So repeated edge inserts stay flat until top-level coord space is exhausted.
 
-Because descendants sort after their ancestor but before the next lexicographically larger sibling region, this stays within the requested gap.
+### Case 3: `left` is a strict prefix of `right`
+
+First try to open a child burst directly under `left` with a burst token smaller than `right`'s next burst token.
+
+If no child burst token fits there, fall back to `right`'s hidden left attachment point and open the burst there.
+
+That still sorts after `left` and before `right`, but uses one extra burst level.
+
+### Case 4: general middle gap
+
+Otherwise, inspect shallower shared ancestors before falling back to the deepest left path.
+
+1. if a sibling burst token fits between `left` and `right` at some shared depth, open there
+2. otherwise open a fresh burst directly under `left`
+
+This lets `fugue` reopen a shallower middle gap when one exists instead of always nesting under the deepest left path.
 
 ## `between(left, right)`
 
-`between(left, right)` is just:
+`between(left, right)` first tries:
 
 ```ts
 startBurst(left, right).next();
 ```
 
-So a one-off insert is treated as a size-1 burst.
+If that fails with `BurstSpaceExhaustedError`, `between()` can still succeed when `left` and `right` already have the same depth and path and there is still room between their final coords.
+
+In that case it returns a same-depth midpoint coord instead of opening a fresh burst.
+
+So `between()` is slightly more permissive than `startBurst()`: it may succeed in a gap where no fresh burst prefix can be opened.
 
 ## `burst.next()`
 
@@ -171,17 +196,17 @@ This is the key v3 property.
 Example:
 
 ```text
-50!A!50
-50!A!60
+50!A!51
+50!A!61
 ```
 
 Later insert a fresh burst between them:
 
 ```text
-50!A!50
-50!A!50!B!50
-50!A!50!B!60
-50!A!60
+50!A!51
+50!A!51!B!51
+50!A!51!B!61
+50!A!61
 ```
 
 So the later burst gets its own identity `B` and stays contiguous.
@@ -193,12 +218,12 @@ If two clients start bursts in the same gap, each gets a different random burst 
 Example:
 
 ```text
-50!A!50
-50!A!50!B!50
-50!A!50!B!60
-50!A!50!C!50
-50!A!50!C!60
-50!A!60
+50!A!51
+50!A!51!B!51
+50!A!51!B!61
+50!A!51!C!51
+50!A!51!C!61
+50!A!61
 ```
 
 The result is `BBCC` or `CCBB`, not `BCBC`.
@@ -221,7 +246,14 @@ Collisions are probabilistic rather than coordinated. With 7-char burst tokens a
 
 ### `BurstSpaceExhaustedError`
 
-Thrown when a fresh nested burst would exceed the 64-burst depth cap.
+Thrown when `fugue` cannot open a fresh burst in the requested gap.
+
+Common reasons:
+
+- opening another nested burst would exceed the 64-burst depth cap
+- no burst token remains between the requested bounds at the chosen depth
+
+`between(left, right)` still tries the same-depth midpoint fallback described above before rethrowing this error.
 
 ### `CoordSpaceExhaustedError`
 
