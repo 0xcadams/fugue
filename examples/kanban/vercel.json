@@ -1,5 +1,5 @@
 {
   "name": "fugue-kanban",
   "installCommand": "bun install --cwd ../..",
-  "buildCommand": "bun --cwd ../.. build && bun run build"
+  "buildCommand": "bun --cwd ../.. run build && bun run build"
 }

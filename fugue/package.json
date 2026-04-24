@@ -1,0 +1,71 @@
+{
+  "name": "fugue",
+  "version": "3.0.0",
+  "description": "Burst-oriented recursive lexicographic ordering keys.",
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "prepack": "bun run build",
+    "release": "bun publish",
+    "test": "vitest run --typecheck --coverage",
+    "test:types": "cd tests && tsc --noEmit",
+    "test:bench": "vitest bench",
+    "test:ui": "vitest --ui",
+    "size": "size-limit"
+  },
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xcadams/fugue.git",
+    "directory": "fugue"
+  },
+  "keywords": [
+    "fractional indexing",
+    "ordering keys",
+    "crdt",
+    "sync",
+    "local-first",
+    "fugue",
+    "database",
+    "typescript",
+    "ts"
+  ],
+  "author": "0xcadams",
+  "license": "Unlicense",
+  "homepage": "https://github.com/0xcadams/fugue",
+  "bugs": {
+    "url": "https://github.com/0xcadams/fugue/issues"
+  },
+  "devDependencies": {
+    "@size-limit/preset-small-lib": "^11.2.0",
+    "@types/node": "^24.5.2",
+    "@vitest/coverage-v8": "3.2.4",
+    "@vitest/ui": "^3.2.4",
+    "esbuild": "^0.25.10",
+    "jsdom": "^26.1.0",
+    "size-limit": "^11.2.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.2.4"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "size-limit": [
+    {
+      "path": "dist/index.js"
+    }
+  ]
+}

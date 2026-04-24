@@ -10,7 +10,7 @@ import {
 } from "list-positions";
 import { PositionSource } from "position-strings";
 
-import { Fugue, type FuguePosition } from "../../../src/index.ts";
+import { Fugue, type FuguePosition } from "../../../fugue/src/index.ts";
 import {
   combineSeed,
   hashString,

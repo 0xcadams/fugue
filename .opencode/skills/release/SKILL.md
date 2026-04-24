@@ -6,7 +6,7 @@ description: Prepare and execute fugue releases using the repo's GitHub release 
 ## What I do
 
 - Guide release prep for this repo's npm package and GitHub release flow.
-- Verify the package version in `package.json` matches the intended tag `v<version>`.
+- Verify the package version in `fugue/package.json` matches the intended tag `v<version>`.
 - Follow the repo's release workflow in `.github/workflows/release.yml`.
 - Use the repo's standard validation steps before release when changes affect package behavior:
   - `bun run test`
@@ -25,9 +25,9 @@ Use this skill when preparing, validating, or kicking off a new `fugue` release.
 
 - Releases are published from GitHub Releases, not from a direct local `npm publish` or `bun publish`.
 - The release tag must exactly match the package version as `v<version>`.
-- The package version lives in the repo root `package.json`.
+- The package version lives in `fugue/package.json`.
 - The publishing workflow is `.github/workflows/release.yml`.
-- The workflow publishes from the repo root after verification passes.
+- The workflow publishes the `fugue/` workspace after verification passes.
 - npm trusted publishing must be configured for workflow filename `release.yml`.
 - Do not create a release for an already-published tag unless the user explicitly wants to rerun the workflow.
 
@@ -36,7 +36,7 @@ Use this skill when preparing, validating, or kicking off a new `fugue` release.
 1. Check the current branch and workspace state.
 2. Determine the intended release branch from the user's request, or use the current branch if that is clearly where the release should happen.
 3. Confirm the target branch contains `.github/workflows/release.yml` and the intended release changes.
-4. Read the root `package.json` and determine the target tag `v<version>`.
+4. Read `fugue/package.json` and determine the target tag `v<version>`.
 5. Check whether that git tag and GitHub Release already exist.
 6. If no new version exists yet, ask for or prepare the version bump before release.
 7. Run the repo's verification commands when appropriate.

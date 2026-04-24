@@ -37,7 +37,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
         run: |
-          version=$(node -p "require('./package.json').version")
+          version=$(node -p "require('./fugue/package.json').version")
           expected="v$version"
 
           if [ "$RELEASE_TAG" != "$expected" ]; then
@@ -58,6 +58,7 @@ jobs:
         run: bun run build
 
       - name: Check npm package contents
+        working-directory: fugue
         run: npm pack --dry-run
 
   publish:
@@ -88,7 +89,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
         run: |
-          version=$(node -p "require('./package.json').version")
+          version=$(node -p "require('./fugue/package.json').version")
           expected="v$version"
 
           if [ "$RELEASE_TAG" != "$expected" ]; then
@@ -100,4 +101,5 @@ jobs:
         run: bun run build
 
       - name: Publish to npm
+        working-directory: fugue
         run: npm publish
