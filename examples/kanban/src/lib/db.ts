@@ -6,12 +6,10 @@ import * as drizzleSchema from "./schema";
 import { schema as zeroSchema } from "./zero-schema.gen";
 
 function getDatabaseUrl() {
-  const value =  process.env.ZERO_UPSTREAM_DB;
+  const value = process.env.ZERO_UPSTREAM_DB;
 
   if (!value) {
-    throw new Error(
-      "Set ZERO_UPSTREAM_DB before starting the kanban example.",
-    );
+    throw new Error("Set ZERO_UPSTREAM_DB before starting the kanban example.");
   }
 
   return value;

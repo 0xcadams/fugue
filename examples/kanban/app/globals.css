@@ -5,8 +5,9 @@
 }
 
 html {
-  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo,
-    Monaco, Consolas, 'Liberation Mono', monospace;
+  font-family:
+    ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
 }
 
 body {
