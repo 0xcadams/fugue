@@ -14,6 +14,8 @@
     "zero:generate": "drizzle-zero generate --schema src/lib/schema.ts --output src/lib/zero-schema.gen.ts --tsconfig tsconfig.json --format"
   },
   "dependencies": {
+    "@dnd-kit/dom": "^0.4.0",
+    "@dnd-kit/react": "^0.4.0",
     "@rocicorp/zero": "^1.3.0",
     "drizzle-orm": "^0.45.2",
     "fugue": "workspace:*",
