@@ -30,13 +30,13 @@ If you came here from Figma's posts on [multiplayer](https://www.figma.com/blog/
 ## Installation
 
 ```bash
+bun add fugue
+# or
 npm install fugue
 # or
 pnpm add fugue
 # or
 yarn add fugue
-# or
-bun add fugue
 ```
 
 ## Quick start: a kanban column

@@ -7,7 +7,7 @@ A very small kanban app built with Next.js, Tailwind, Drizzle, `drizzle-zero`, R
 ## What it shows
 
 - client-generated `fugue` positions for ordered cards
-- simple drag-and-drop between lanes
+- dnd-kit drag-and-drop between lanes with touch support
 - optimistic reads and writes with Zero
 - Drizzle as the schema and migration source of truth
 - a tiny Next.js app router setup with Tailwind
