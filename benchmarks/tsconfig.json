@@ -13,8 +13,10 @@
     "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "ignoreDeprecations": "6.0",
     "resolveJsonModule": true,
     "types": ["node"],
+    "rootDir": "..",
     "outDir": "dist"
   },
   "include": ["src/**/*.ts", "../fugue/src/**/*.ts"]
