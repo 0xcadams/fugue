@@ -12,7 +12,11 @@ Client-generated position keys for local-first lists and collaborative text.
 
 Use it for kanban cards, outline nodes, layers, comments, blocks, rows, spans, or characters.
 
-`fugue` is not a full CRDT. It solves ordering only. If your app already has a central server, optimistic updates, or an app-specific sync layer, you probably do not need a full CRDT just to solve ordered sequences. For a good argument in that direction, see [Collaborative Text Editing without CRDTs or OT](https://mattweidner.com/2025/05/21/text-without-crdts.html).
+![kanban demo](https://raw.githubusercontent.com/0xcadams/fugue/refs/heads/main/.github/kanban-demo.gif)
+
+Check out the demo here: [https://kanban.cadams.io](https://kanban.cadams.io)
+
+> `fugue` is not a full CRDT; it solves ordering only. However, if your app already has a central server, optimistic updates, or an app-specific sync layer, you probably do not need a full CRDT just to solve ordered sequences - see [Collaborative Text Editing without CRDTs or OT](https://mattweidner.com/2025/05/21/text-without-crdts.html).
 
 ## Why fugue?
 

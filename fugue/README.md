@@ -10,6 +10,10 @@ Client-generated position keys for local-first lists and collaborative text.
 - insert anywhere without reindexing existing items
 - keep typing, paste, and duplicate bursts contiguous under concurrent edits
 
+![kanban demo](https://raw.githubusercontent.com/0xcadams/fugue/refs/heads/main/.github/kanban-demo.gif)
+
+Check out the demo here: [https://kanban.cadams.io](https://kanban.cadams.io)
+
 ## Installation
 
 ```bash
